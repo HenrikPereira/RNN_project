@@ -1,11 +1,12 @@
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
-test_df = pd.read_csv(r'./Data/TestDataset.csv')
-train_df = pd.read_csv(r'./Data/TrainingDataset.csv')
+test_df = pd.read_csv(r'../Data/TestDataset.csv')
+train_df = pd.read_csv(r'../Data/TrainingDataset.csv')
 
 cat_cols = []
 qnt_cols = []
@@ -36,7 +37,7 @@ def drop_empty_cols(dataframe):
     for c in cols:
         if len(dataframe[c].unique()) == 1:
             dataframe.drop(columns=[c], inplace=True)
-            objects.remove(c)
+            cols.remove(c)
             noneed += 1
             list_noneed.append(c)
 
@@ -46,3 +47,9 @@ def drop_empty_cols(dataframe):
         print('\t{0} columns, {1} were droped.'.format(noneed, list_noneed))
     else:
         print('\tNo columns were removed.')
+
+
+minmax = MinMaxScaler()
+
+train_df = train_df.fillna(0)
+train_df = pd.DataFrame(minmax.fit_transform(train_df), columns=train_df.columns)
