@@ -2,8 +2,8 @@ import pandas as pd
 
 pd.set_option('display.max_columns', None)
 
-test_df = pd.read_csv(r'../Data/TestDataset.csv')
-train_df = pd.read_csv(r'../Data/TrainingDataset.csv')
+test_df = pd.read_csv(r'./Data/TestDataset.csv')
+train_df = pd.read_csv(r'./Data/TrainingDataset.csv')
 
 cat_cols = []
 qnt_cols = []
