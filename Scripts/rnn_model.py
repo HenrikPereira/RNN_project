@@ -2,7 +2,8 @@ import numpy as np
 import data_preprocessing
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import Sequential, save_model, Model
-from tensorflow.keras.layers import Dense, SimpleRNN, Dropout, Embedding, Input, BatchNormalization, Concatenate, Flatten
+from tensorflow.keras.layers import Dense, SimpleRNN, Dropout, Embedding, Input, \
+    BatchNormalization, Concatenate, Flatten, Reshape
 from tensorflow.keras.optimizers import RMSprop
 from tensorflow.keras.initializers import he_uniform, he_normal
 from tensorflow.keras.utils import plot_model
@@ -83,38 +84,6 @@ def make_autoencoder(
     return autoencoder, encoder
 
 
-# adapted from:
-# https://datascience.stackexchange.com/questions/26103/merging-two-different-models-in-keras
-def make_model(
-        lr=0.001,
-        enc_dim=5
-):
-    # Auto-encoder for the features (categorical and quantitative)
-    ae1 = Input(shape=(,544), name='FeaturesInput')
-    ae2 = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1), name='AE_feature_reduction')(ae1)
-    ae3 = Dense(544, activation='relu', name='AE_3')(ae2)
-
-    # Recurrent layers
-    rnn0 = Input(shape=(,,2), name='TimeSeriesInput')
-    rnn1 = Concatenate(axis=1, name='ConcatenateInputs')([rnn0, ae2])
-    rnn2 = SimpleRNN(10, activation='relu', name='RecurrentNN')(rnn1)
-    rnn3 = Dropout(0.2, name='DropOut_layer')(rnn2)
-    rnn4 = BatchNormalization(name='Batch_Normalization')(rnn3)
-    rnn5 = Dense(1, activation='sigmoid', name='TimeSeries_output_layer')(rnn4)
-
-    # Merge
-    model = Model(inputs=[ae1, rnn0], outputs=[ae3, rnn5])
-
-    # Compile
-    model.compile(
-        optimizer=RMSprop(learning_rate=lr),
-        loss='mae',
-        metrics=['mse']
-    )
-
-    return model
-
-
 def plot_nn_metrics(nn_history, parameters=None):
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     if parameters is None:
@@ -144,6 +113,7 @@ def plot_nn_metrics(nn_history, parameters=None):
 autoenc, feat_encoder = make_autoencoder(0.001)
 autoenc.summary()
 feat_encoder.summary()
+
 # %%
 x_train, x_test = train_test_split(train_feat, test_size=0.25, shuffle=True, random_state=1)
 x_train = minmax.fit_transform(x_train)
@@ -203,5 +173,42 @@ def tsne_plot(data, labels, annotate=False):
 tsne_plot(pred_enc, train_feat_labels)
 
 #%%
+tsne_plot(minmax.fit_transform(train_feat), train_feat_labels)
+
+#%%
+# adapted from:
+# https://datascience.stackexchange.com/questions/26103/merging-two-different-models-in-keras
+def make_model(
+        lr=0.001,
+        enc_dim=5
+):
+    # Auto-encoder for the features (categorical and quantitative)
+    ae1 = Input(shape=(544,), name='FeaturesInput')
+    ae2 = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1), name='AE_feature_reduction')(ae1)
+    ae3 = Dense(544, activation='relu', name='AE_3')(ae2)
+
+    # Recurrent layers
+    rnn0 = Input(shape=(2,), name='TimeSeriesInput')
+    rnn1 = Concatenate(axis=1, name='ConcatenateInputs')([rnn0, ae2])
+    rnn2 = Reshape((2, 5))(rnn1)
+    rnn3 = SimpleRNN(10, activation='relu', name='RecurrentNN')(rnn2)
+    rnn4 = Dropout(0.2, name='DropOut_layer')(rnn3)
+    rnn5 = BatchNormalization(name='Batch_Normalization')(rnn4)
+    rnn6 = Dense(1, activation='sigmoid', name='TimeSeries_output_layer')(rnn5)
+
+    # Merge
+    model_ = Model(inputs=[ae1, rnn0], outputs=[ae3, rnn6])
+
+    # Compile
+    model_.compile(
+        optimizer=RMSprop(learning_rate=lr),
+        loss='mae',
+        metrics=['mse']
+    )
+
+    return model_
+
+#%%
 model = make_model()
 model.summary()
+plot_model(model, show_shapes=True, expand_nested=True, to_file='model.png')
