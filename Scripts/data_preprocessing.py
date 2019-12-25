@@ -125,6 +125,11 @@ product_train_df_zVersion = product_train_df.copy().fillna(0)
 # pts_train_df_zVersion fills all NaN of the time series with zeros
 pts_train_df_zVersion = pts_train_df.copy().fillna(0)
 
+#%%
+# Deletion of non essential variables
+del cat_cols, col, date_cols, i, intermediate_df, max_release_date, month, outc_c_cols, outc_cols, product_train_df, \
+    train_df, qnt_cols, it
+
 # #%%  -------------> STAND BY CODE <---------------
 # # Merge product characteristics
 # ts_train_df_final = pd.merge(
