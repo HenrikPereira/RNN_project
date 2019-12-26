@@ -1,5 +1,10 @@
+from typing import Any, Union
+
 import pandas as pd
 import numpy as np
+from pandas import Series, DataFrame
+from pandas.core.generic import NDFrame
+
 pd.set_option('display.max_columns', None)
 
 #%%
@@ -112,7 +117,8 @@ pts_train_df = pts_train_df[pts_train_df.sum(axis=1) != 0]
 # Create a product dataframe
 product_train_df = train_df[cat_cols + qnt_cols]
 
-# Same treatment expected for the test DataFrame...
+# setting up the test dataset to be in same format as the product dataset
+product_test_df = test_df[cat_cols + qnt_cols]
 
 #%%
 # creating 2 distinct scenarios of NaN filling
@@ -121,6 +127,9 @@ product_train_df = train_df[cat_cols + qnt_cols]
 # product_train_df_zVersion fills all NaN of the products with zeroes
 product_train_df_mVersion = product_train_df.copy().fillna(product_train_df.median())
 product_train_df_zVersion = product_train_df.copy().fillna(0)
+
+product_test_df_mVersion = product_test_df.copy().fillna(product_test_df.median())
+product_test_df_zVersion = product_test_df.copy().fillna(0)
 
 # pts_train_df_zVersion fills all NaN of the time series with zeros
 pts_train_df_zVersion = pts_train_df.copy().fillna(0)
