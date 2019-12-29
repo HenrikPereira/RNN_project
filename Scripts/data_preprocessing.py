@@ -1,9 +1,5 @@
-from typing import Any, Union
-
 import pandas as pd
 import numpy as np
-from pandas import Series, DataFrame
-from pandas.core.generic import NDFrame
 
 pd.set_option('display.max_columns', None)
 
@@ -50,6 +46,14 @@ month = 30  # average number of days in a month
 intermediate_df['D_Release'] = intermediate_df['D_Release'] // month
 intermediate_df['D_PreRelease'] = intermediate_df['D_PreRelease'] // month
 intermediate_df['Delta_PreRel_Rel'] = intermediate_df['D_Release'] - intermediate_df['D_PreRelease']
+
+test_df['Date_1'] = test_df['Date_1'] // month
+test_df['Date_2'] = test_df['Date_2'] // month
+test_df['Delta_PreRel_Rel'] = test_df['Date_1'] - test_df['Date_2']
+
+train_df['Date_1'] = train_df['Date_1'] // month
+train_df['Date_2'] = train_df['Date_2'] // month
+train_df['Delta_PreRel_Rel'] = train_df['Date_1'] - train_df['Date_2']
 
 
 #%%
@@ -115,10 +119,10 @@ pts_train_df = pts_train_df[pts_train_df.sum(axis=1) != 0]
 
 #%%
 # Create a product dataframe
-product_train_df = train_df[cat_cols + qnt_cols]
+product_train_df = train_df[['Delta_PreRel_Rel'] + cat_cols + qnt_cols]
 
 # setting up the test dataset to be in same format as the product dataset
-product_test_df = test_df[cat_cols + qnt_cols]
+product_test_df = test_df[['Delta_PreRel_Rel'] + cat_cols + qnt_cols]
 
 #%%
 # creating 2 distinct scenarios of NaN filling
