@@ -55,18 +55,12 @@ def make_autoencoder(
     autoencoder_ = Model(inputs=ae0, outputs=decode)
     encoder_ = Model(inputs=ae0, outputs=encode)
     p_prob = Model(inputs=ae0, outputs=prob)
-    # model_ = Model(inputs=[ae0, rnn0], outputs=[decode, rnn6])
 
     autoencoder_.compile(
         optimizer=Adam(learning_rate=lr),
         loss='mae',
         metrics=['mse']
     )
-
-    # p_prob.compile(
-    #     optimizer=RMSprop(learning_rate=lr),
-    #     loss='categorical_crossentropy',
-    #     metrics=['accuracy'])
 
     return autoencoder_, encoder_, p_prob, opt
 
