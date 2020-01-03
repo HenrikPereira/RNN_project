@@ -355,13 +355,15 @@ def make_ae_rnn(
     # Simple RNN layers
     # inspired by https://dlpm2016.fbk.eu/docs/esteban_combining.pdf,
     # https://stackoverflow.com/questions/52474403/keras-time-series-suggestion-for-including-static-and-dynamic-variables-in-lstm,
-    seq_input = Input(shape=(None, time_series_shape[0]))  # Shape: (timesteps, data dimensions)
+    # https://blog.nirida.ai/predicting-e-commerce-consumer-behavior-using-recurrent-neural-networks-36e37f1aed22
+    # https://www.affineanalytics.com/blog/new-product-forecasting-using-deep-learning-a-unique-way/
+    seq_input = Input(shape=(time_series_shape[0], time_series_shape[1]))  # Shape: (timesteps, data dimensions)
     # the number of units is the number of sequential months to predict
     rnn0 = SimpleRNN(n_months, activation='relu', return_sequences=True)(seq_input)
 
     con0 = Dense(n_months, activation='relu')(encode)
-    con1 = Reshape((-1, n_months))(con0)
-    concat = Concatenate()([rnn0, con1])
+    # con1 = Reshape((-1, n_months))(con0)
+    concat = Concatenate()([rnn0, con0])
     out = TimeDistributed(Dense(1))(concat)
 
     autoencoder_ = Model(inputs=ae0, outputs=decode)
