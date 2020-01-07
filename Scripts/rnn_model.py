@@ -2,8 +2,8 @@ import numpy as np
 import data_preprocessing
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import save_model, Model
-from tensorflow.keras.layers import Dense, SimpleRNN, Dropout, Embedding, Input, \
-    BatchNormalization, Concatenate, Flatten, Reshape, TimeDistributed
+from tensorflow.keras.layers import Dense, SimpleRNN, Dropout, Input, \
+    BatchNormalization, Concatenate, Reshape, TimeDistributed, Permute
 from tensorflow.keras.optimizers import RMSprop, Adam
 from tensorflow.keras.initializers import he_uniform, he_normal
 from tensorflow.keras.utils import plot_model, to_categorical
@@ -342,40 +342,38 @@ plot_nn_metrics(rnn_history)
 #%% Model conjugating Autoencoder and Simple RNN
 def make_ae_rnn(
         product_shape,
-        time_series_shape,
         lr=0.001,
-        n_months=12,
-        enc_dim=100
+        enc_dim=200
 ):
     # Auto encoder layers
     ae0 = Input(shape=product_shape, name='FeaturesInput')
     encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1), name='AE_feature_reduction')(ae0)
     decode = Dense(product_shape[0], activation='relu', name='AE_3')(encode)
+    perm = Permute((2, 1))(encode)
 
     # Simple RNN layers
     # inspired by https://dlpm2016.fbk.eu/docs/esteban_combining.pdf,
     # https://stackoverflow.com/questions/52474403/keras-time-series-suggestion-for-including-static-and-dynamic-variables-in-lstm,
     # https://blog.nirida.ai/predicting-e-commerce-consumer-behavior-using-recurrent-neural-networks-36e37f1aed22
     # https://www.affineanalytics.com/blog/new-product-forecasting-using-deep-learning-a-unique-way/
-    seq_input = Input(shape=(time_series_shape[0], time_series_shape[1]))  # Shape: (timesteps, data dimensions)
-    # the number of units is the number of sequential months to predict
-    rnn0 = SimpleRNN(n_months, activation='relu', return_sequences=True)(seq_input)
-
-    con0 = Dense(n_months, activation='relu')(encode)
+    # https://lilianweng.github.io/lil-log/2017/07/22/predict-stock-prices-using-RNN-part-2.html
+    seq_input = Input(shape=(length, train_ts.shape[-1]))  # Shape: (timesteps, data dimensions)
+    concat0 = Concatenate(axis=1)([seq_input, perm])
+    rnn0 = SimpleRNN(train_ts.shape[-1], activation='relu', return_sequences=True)(concat0)
     # con1 = Reshape((-1, n_months))(con0)
     concat = Concatenate()([rnn0, con0])
     out = TimeDistributed(Dense(1))(concat)
 
     autoencoder_ = Model(inputs=ae0, outputs=decode)
     encoder_ = Model(inputs=ae0, outputs=encode)
-    model_rnn_ = Model(inputs=seq_input, outputs=out)
+    # model_rnn_ = Model(inputs=seq_input, outputs=out)
     model_full_ = Model(inputs=[ae0, seq_input], outputs=[out])
 
-    model_rnn_.compile(
-        optimizer=Adam(learning_rate=lr),
-        loss='mae',
-        metrics=['mse']
-    )
+    # model_rnn_.compile(
+    #     optimizer=Adam(learning_rate=lr),
+    #     loss='mae',
+    #     metrics=['mse']
+    # )
 
     autoencoder_.compile(
         optimizer=Adam(learning_rate=lr),
@@ -389,15 +387,13 @@ def make_ae_rnn(
         metrics=['mse']
     )
 
-    return autoencoder_, encoder_, model_rnn_, model_full_
+    return autoencoder_, encoder_, model_full_
 
 #%%
-ae, enc, model_rnn, model_full = make_ae_rnn(
-    product_shape=train_prod_feat.shape,
-    time_series_shape=train_ts.shape,
-    enc_dim=200
+ae, enc, model_full = make_ae_rnn(
+    product_shape=train_prod_feat.shape
 )
 
 # %%
 model_full.summary()
-plot_model(model_full)
+plot_model(model_full, show_shapes=True, expand_nested=True)
