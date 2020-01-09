@@ -10,7 +10,6 @@ from tensorflow.keras.utils import plot_model, to_categorical
 from tensorflow.keras.backend import transpose, squeeze
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from sklearn.cluster import OPTICS
 from sklearn.manifold import TSNE
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -20,6 +19,7 @@ train_prod_feat = np.array(data_preprocessing.product_train_df_zVersion.values).
 test_prod_feat = np.array(data_preprocessing.product_test_df_zVersion.values).astype('int32')
 
 products_shape = (train_prod_feat.shape[-1],)
+prod_features = train_prod_feat.shape[-1]
 
 # %% Loading of Time Series (each column corresponds to the index of above product data
 train_ts = np.array(data_preprocessing.pts_train_df_zVersion.values).astype('int32')
@@ -37,24 +37,25 @@ def make_autoencoder(
         enc_dim=100
 ):
     # Auto encoder layers
-    ae0 = Input(shape=products_shape, name='FeaturesInput')
+    ae0 = Input(shape=(products_shape[0],), name='FeaturesInput')
     encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1), name='AE_feature_reduction')(ae0)
     decode = Dense(products_shape[0], activation='relu', name='AE_3')(encode)
 
     # inspired by https://www.frontiersin.org/articles/10.3389/fgene.2018.00585/full
     # clustering layers (will work with the help of OPTICS)
     # we want to find the probability of one product to be in 1 of total found clusters
-    opt = OPTICS()
-    opt.fit(minmax.fit_transform(data))
-    clusters = len(np.unique(opt.labels_))
-    print('Optimal number of cluster:', clusters)
-    prob0 = Dense(enc_dim // 2, activation='relu', kernel_initializer=he_normal(1))(encode)
-    prob1 = BatchNormalization()(prob0)
-    prob = Dense(clusters, activation='softmax', name='Probability_Product')(prob1)
+    # section on hold...
+    # opt = OPTICS()
+    # opt.fit(minmax.fit_transform(data))
+    # clusters = len(np.unique(opt.labels_))
+    # print('Optimal number of cluster:', clusters)
+    # prob0 = Dense(enc_dim // 2, activation='relu', kernel_initializer=he_normal(1))(encode)
+    # prob1 = BatchNormalization()(prob0)
+    # prob = Dense(clusters, activation='softmax', name='Probability_Product')(prob1)
 
     autoencoder_ = Model(inputs=ae0, outputs=decode)
     encoder_ = Model(inputs=ae0, outputs=encode)
-    p_prob = Model(inputs=ae0, outputs=prob)
+    # p_prob = Model(inputs=ae0, outputs=prob)
 
     autoencoder_.compile(
         optimizer=Adam(learning_rate=lr),
@@ -62,7 +63,7 @@ def make_autoencoder(
         metrics=['mse']
     )
 
-    return autoencoder_, encoder_, p_prob, opt
+    return autoencoder_, encoder_
 
 
 # %% Function to plot the neural network metrics
@@ -81,9 +82,10 @@ def plot_nn_metrics(nn_history, title=None, parameters=None):
     for n, metric in enumerate(p_metrics):
         name = metric.replace("_", " ").capitalize()
         plt.subplot(matrix[0], matrix[1], n + 1)
-        plt.plot(nn_history.epoch, nn_history.history[metric], color=colors[0], label='Train')
+        plt.plot(nn_history.epoch, nn_history.history[metric],
+                 color=colors[0], label='Train')
         plt.plot(nn_history.epoch, nn_history.history['val_' + metric],
-                 color=colors[0], linestyle="--", label='Val')
+                 color=colors[1], linestyle="--", label='Val')
         plt.xlabel('Epoch')
         plt.ylabel(name)
         if title is not None:
@@ -110,7 +112,7 @@ n_epochs = []
 for i in np.arange(0, products_shape[0] - 4, 5):
     if i == 0:
         i = 1
-    autoenc, feat_encoder, _, _ = make_autoencoder(train_prod_feat, 0.001, i)
+    autoenc, feat_encoder = make_autoencoder(train_prod_feat, 0.001, i)
 
     history = autoenc.fit(
         x=x_train, y=x_train,
@@ -148,12 +150,13 @@ plt.show()
 # achieve least loss and MSE
 
 # %% Initialization of Auto-encoder models
-autoenc, feat_encoder, probab, _ = make_autoencoder(train_prod_feat, 0.001, 200)
+autoenc, feat_encoder = make_autoencoder(train_prod_feat, 0.001, 200)
 autoenc.summary()
 print('---------------------------------------------------------------------------------------------------------------')
 feat_encoder.summary()
 
 # %% Training of Auto-encoder
+# split not necessary
 EPOCHS = 100
 x_train, x_val = train_test_split(
     train_prod_feat,
@@ -161,8 +164,9 @@ x_train, x_val = train_test_split(
     shuffle=True,
     random_state=1
 )
-x_train = minmax.fit_transform(x_train)
-x_val = minmax.fit_transform(x_val)
+
+x_train = minmax.fit_transform(train_prod_feat)
+x_val = minmax.fit_transform(train_prod_feat)
 
 ae_history = autoenc.fit(
     x=x_train, y=x_train,
@@ -266,13 +270,9 @@ def data_sequence_generator(
         )
 
         for j, row in enumerate(rows):
-            indices = range(
-                rows[j] - lookback,
-                rows[j],
-                step
-            )
+            indices = range(rows[j] - lookback, rows[j], step)
             samples[j] = data[indices]
-            targets[j] = data[rows[j] + target][1]
+            targets[j] = data[rows[j] + target]  # removed [1]
 
         # with yield the function returns a generator, instead of an array of arrays,
         # that will be feed to an fit_generator method of our NN model
@@ -305,6 +305,8 @@ def make_rnn(
         n_months=12,
         lr=0.001
 ):
+    n_neurons = length  # we want the model to predict with length of output == to length of timesteps inputted
+
     # Simple RNN layers
     seq_input = Input(shape=(None, train_ts.shape[-1]))  # Shape: (timesteps, data dimensions)
     # the number of units is the number of sequential months to predict
@@ -341,15 +343,22 @@ plot_nn_metrics(rnn_history)
 
 #%% Model conjugating Autoencoder and Simple RNN
 def make_ae_rnn(
-        product_shape,
         lr=0.001,
         enc_dim=200
 ):
     # Auto encoder layers
-    ae0 = Input(shape=product_shape, name='FeaturesInput')
+    # TODO allow the use of generator
+    ae0 = Input(shape=(prod_features,), name='FeaturesInput')
     encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1), name='AE_feature_reduction')(ae0)
-    decode = Dense(product_shape[0], activation='relu', name='AE_3')(encode)
-    perm = Permute((2, 1))(encode)
+    decode = Dense(prod_features, activation='relu', name='AE_3')(encode)
+    shape_re = Reshape((train_prod_feat.shape[0], enc_dim))(encode)
+    perm = Permute((2, 1))(shape_re)
+    # ae0 = Input(shape=(train_prod_feat.shape[0], prod_features,))
+    # shape_re0 = Reshape((prod_features,))(ae0)
+    # encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1))(shape_re0)
+    # decode = Dense(prod_features, activation='relu', name='AE_3')(encode)
+    # shape_re = Reshape((train_prod_feat.shape[0], enc_dim))(encode)
+    # perm = Permute((2, 1))(shape_re)
 
     # Simple RNN layers
     # inspired by https://dlpm2016.fbk.eu/docs/esteban_combining.pdf,
@@ -357,43 +366,120 @@ def make_ae_rnn(
     # https://blog.nirida.ai/predicting-e-commerce-consumer-behavior-using-recurrent-neural-networks-36e37f1aed22
     # https://www.affineanalytics.com/blog/new-product-forecasting-using-deep-learning-a-unique-way/
     # https://lilianweng.github.io/lil-log/2017/07/22/predict-stock-prices-using-RNN-part-2.html
-    seq_input = Input(shape=(length, train_ts.shape[-1]))  # Shape: (timesteps, data dimensions)
-    concat0 = Concatenate(axis=1)([seq_input, perm])
-    rnn0 = SimpleRNN(train_ts.shape[-1], activation='relu', return_sequences=True)(concat0)
-    # con1 = Reshape((-1, n_months))(con0)
-    concat = Concatenate()([rnn0, con0])
-    out = TimeDistributed(Dense(1))(concat)
+    n_neurons = length  # we want the model to predict with length of output == to length of timesteps inputted
+    seq_input = Input(shape=(length / step, train_ts.shape[-1]))  # Shape: (timesteps, data dimensions)
+    concat0 = Concatenate(axis=1)([perm, seq_input])
+    # the number of units is the number of sequential months to predict
+    rnn0 = SimpleRNN(n_neurons, activation='tanh', return_sequences=True)(concat0)
+    out = TimeDistributed(Dense(train_ts.shape[-1]))(rnn0)
 
-    autoencoder_ = Model(inputs=ae0, outputs=decode)
     encoder_ = Model(inputs=ae0, outputs=encode)
-    # model_rnn_ = Model(inputs=seq_input, outputs=out)
-    model_full_ = Model(inputs=[ae0, seq_input], outputs=[out])
-
-    # model_rnn_.compile(
-    #     optimizer=Adam(learning_rate=lr),
-    #     loss='mae',
-    #     metrics=['mse']
-    # )
-
+    autoencoder_ = Model(inputs=ae0, outputs=decode)
     autoencoder_.compile(
         optimizer=Adam(learning_rate=lr),
         loss='mae',
         metrics=['mse']
     )
 
+    model_rnn_ = Model(inputs=[ae0, seq_input], outputs=out)
+    rnn.layers[1].trainable = False
+    model_rnn_.compile(
+        optimizer=Adam(learning_rate=lr),
+        loss='mae',
+        metrics=['mse']
+    )
+
+    # new_prod_predictor_ = Model(inputs=ae0, outputs=out)
+
+    model_full_ = Model(inputs=[ae0, seq_input], outputs=[out, decode])
     model_full_.compile(
         optimizer=Adam(learning_rate=lr),
         loss='mae',
         metrics=['mse']
     )
 
-    return autoencoder_, encoder_, model_full_
+    return autoencoder_, encoder_, model_full_, model_rnn_
+
 
 #%%
-ae, enc, model_full = make_ae_rnn(
-    product_shape=train_prod_feat.shape
+ae, enc, full, rnn = make_ae_rnn()
+
+# %%
+full.summary()
+plot_model(full, to_file=r'./Logs/full_model.png', show_shapes=True, expand_nested=True)
+
+#%%
+autoenc.summary()
+plot_model(autoenc, to_file=r'./Logs/autoencoder_model.png', show_shapes=True, expand_nested=True)
+
+#%%
+rnn.summary()
+plot_model(rnn, to_file=r'./Logs/rnn_model.png', show_shapes=True, expand_nested=True)
+
+# %%
+ae_history = ae.fit(
+    x=x_train, y=x_train,
+    batch_size=64,
+    epochs=500,
+    validation_data=(x_val, x_val),
+    callbacks=[EarlyStopping(
+        patience=5,
+        restore_best_weights=True
+    )],
+    verbose=2
+)
+plot_nn_metrics(ae_history)
+
+#%%
+prod_train_gen = data_sequence_generator(
+    x_train,
+    len(x_train),
+    0,
+    len(x_train)
 )
 
 # %%
-model_full.summary()
-plot_model(model_full, show_shapes=True, expand_nested=True)
+ae_history = ae.fit_generator(
+    generator=prod_train_gen,
+    steps_per_epoch=100,
+    epochs=500,
+    validation_data=prod_train_gen,
+    validation_steps=1,
+    callbacks=[EarlyStopping(
+        patience=5,
+        restore_best_weights=True
+    )],
+    verbose=2
+)
+plot_nn_metrics(ae_history)
+
+#%%
+rnn.summary()
+rnn_history = full.fit_generator(
+    generator=[prod_train_gen, train_gen],
+    steps_per_epoch=100,
+    epochs=500,
+    callbacks=[EarlyStopping(
+        patience=5,
+        restore_best_weights=True
+    )],
+    validation_data=[prod_train_gen, val_gen],
+    validation_steps=val_steps,
+    verbose=2
+)
+
+#%%
+full_history = full.fit_generator(
+    generator=train_gen,
+    steps_per_epoch=100,
+    epochs=500,
+    callbacks=[EarlyStopping(
+        patience=5,
+        restore_best_weights=True
+    )],
+    validation_data=val_gen,
+    validation_steps=val_steps,
+    verbose=2
+)
+
+plot_nn_metrics(full_history)
