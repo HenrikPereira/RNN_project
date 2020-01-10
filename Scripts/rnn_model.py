@@ -85,7 +85,7 @@ def plot_nn_metrics(nn_history, title=None, parameters=None):
     h = 0
     for n, metric in enumerate(p_metrics):
         name = metric.replace("_", " ").capitalize()
-        plt.subplot(matrix[i], matrix[1], n + 1)
+        plt.subplot(matrix[v], matrix[h], n + 1)
         plt.plot(nn_history.epoch, nn_history.history[metric],
                  color=colors[0], label='Train')
         plt.plot(nn_history.epoch, nn_history.history['val_' + metric],
@@ -98,7 +98,6 @@ def plot_nn_metrics(nn_history, title=None, parameters=None):
             h = 0
         else:
             h += 1
-
 
     if title is not None:
         plt.title(title)
@@ -169,16 +168,16 @@ feat_encoder.summary()
 
 # %% Training of Auto-encoder
 # split not necessary
-EPOCHS = 100
+EPOCHS = 200
 x_train, x_val = train_test_split(
     train_prod_feat,
     test_size=0.25,
     shuffle=True,
     random_state=1
 )
-
-x_train = minmax.fit_transform(train_prod_feat)
-x_val = minmax.fit_transform(train_prod_feat)
+minmax.fit(x_train)
+x_train = minmax.transform(x_train)
+x_val = minmax.transform(x_val)
 
 ae_history = autoenc.fit(
     x=x_train, y=x_train,
@@ -247,6 +246,7 @@ def data_sequence_generator(
         lookback,  # how many timesteps back the input should go
         target,  # how many timesteps in the future the target should be
         batch_size,  # the number of samples per batch
+        aux_data=None,  # data to be used as header for each batch of samples and targets
         min_index=0,  # min index in the data array that delimits which timesteps to draw from
         max_index=None,  # max index in the data array that delimits which timesteps to draw from
         shuffle=False,  # whether to shuffle the samples or draw them in chronological order
@@ -269,14 +269,22 @@ def data_sequence_generator(
             rows = np.arange(_i, min(_i + batch_size, max_index))
             _i += len(rows)
 
-        samples = np.zeros((len(rows), lookback // step, data.shape[-1]))
-        targets = np.zeros((len(rows), lookback // step, data.shape[-1]))  # same dimensions as samples
+            if aux_data is None:
+                samples = np.zeros((len(rows), lookback // step, data.shape[-1]))
+                targets = np.zeros((len(rows), lookback // step, data.shape[-1]))  # same dimensions as samples
+            else:
+                samples = np.zeros((len(rows), (lookback // step) + len(aux_data), data.shape[-1]))
+                targets = np.zeros((len(rows), (lookback // step) + len(aux_data), data.shape[-1]))  # same dimensions as samples
 
         for j, row in enumerate(rows):
             indices = range(rows[j] - lookback, rows[j], step)
-            samples[j] = data[indices]
-            targets[j] = data[rows[j] + target]  # removed [1]
-
+            indices_target = range((rows[j] - lookback) + target, rows[j] + target, step)
+            if aux_data is not None:
+                samples[j] = np.append(aux_data, data[indices], axis=0)
+                targets[j] = np.append(aux_data, data[indices_target], axis=0)
+            else:
+                samples[j] = data[indices]
+                targets[j] = data[indices_target]
         # with yield the function returns a generator, instead of an array of arrays,
         # that will be feed to an fit_generator method of our NN model
         yield samples, targets
@@ -284,7 +292,7 @@ def data_sequence_generator(
 
 # %%
 batch_size = 50
-length = 3
+length = 2
 delay = 1
 split_index = 80
 step = 1
@@ -345,7 +353,7 @@ def make_rnn(
     # Simple RNN layers
     seq_input = Input(shape=(length / step, train_ts.shape[-1]))  # Shape: (timesteps, data dimensions)
     # the number of units is the number of sequential months to predict
-    rnn0 = SimpleRNN(n_neurons, activation='tanh', return_sequences=True)(seq_input)
+    rnn0 = SimpleRNN(n_neurons, activation='softmax', return_sequences=True)(seq_input)
     out = TimeDistributed(Dense(train_ts.shape[-1], activation='relu'))(rnn0)
 
     model_ = Model(inputs=seq_input, outputs=out)
@@ -367,7 +375,7 @@ val_steps = (len(train_ts) - split_index + 1 - length)
 
 rnn_history = model_rnn.fit_generator(
     generator=train_gen,
-    steps_per_epoch=50,
+    steps_per_epoch=200,
     epochs=20,
     callbacks=[EarlyStopping(
         patience=5,
@@ -379,14 +387,17 @@ rnn_history = model_rnn.fit_generator(
 )
 
 plot_nn_metrics(rnn_history)
-
-# %%
-predict = model_rnn.predict(val_gen, steps=1)
-predict = minmax.inverse_transform(predict[0])
-
-# %%
-# x_train = np.reshape(x_train, (-1, x_train.shape[0], x_train.shape[1]))
-# x_val = np.reshape(x_val, (-1, x_val.shape[0], x_val.shape[1]))
+#%%
+# Test prediction
+predict = model_rnn.predict(val_gen, steps=12)
+predicted = None
+for i in range(len(predict)):
+    batch = minmax.inverse_transform(predict[i][1].reshape(1, -1))
+    if predicted is None:
+        predicted = batch
+    else:
+        predicted = np.append(predicted, batch, axis=0)
+# predicted = predicted.reshape((-1,1))
 
 # %% Model conjugating Autoencoder and Simple RNN
 def make_ae_rnn(
@@ -475,6 +486,7 @@ minmax.fit(x_train)
 x_train = minmax.transform(x_train)
 x_val = minmax.transform(x_val)
 
+#%%
 ae_history = ae.fit(
     x=x_train, y=x_train,
     batch_size=64,
@@ -486,28 +498,8 @@ ae_history = ae.fit(
     )],
     verbose=2
 )
-plot_nn_metrics(ae_history, parameters=['loss', 'mse', 'cosine_similarity'])
-
-# prod_train_gen = data_sequence_generator(
-#     x_train,
-#     len(x_train),
-#     0,
-#     len(x_train)
-# )
-#
-# ae_history = ae.fit_generator(
-#     generator=prod_train_gen,
-#     steps_per_epoch=100,
-#     epochs=500,
-#     validation_data=prod_train_gen,
-#     validation_steps=1,
-#     callbacks=[EarlyStopping(
-#         patience=5,
-#         restore_best_weights=True
-#     )],
-#     verbose=2
-# )
-# plot_nn_metrics(ae_history)
+# TODO multiple metrics (>2) not showing on plot...
+plot_nn_metrics(ae_history, parameters=['loss', 'cosine_similarity'])
 
 # %%
 re_x_train = np.reshape(x_train, (-1, x_train.shape[0], x_train.shape[1]))
@@ -521,24 +513,15 @@ rnn.compile(
     metrics=['mse']
 )
 rnn.summary()
-
-# rnn_history = rnn.fit(
-#     x=[x_train, train_ts],
-#     y=train_ts,
-#     batch_size=64,
-#     epochs=500,
-#     validation_data=([x_train, train_ts], train_ts),
-#     callbacks=[EarlyStopping(
-#         patience=5,
-#         restore_best_weights=True
-#     )],
-#     verbose=2
-# )
-# plot_nn_metrics(rnn_history)
-
+# Although this model is well constructed and compiles without problems, the inputs are evaluated before they are made
+# compatible inside the model. As the inputs are incompatible without further transformation, the model stalls and
+# doesn't go further. Thus, instead of using hybrid AE-RNN, we are forced to continue with AE and RNN isolated and
+# blind to each other: 1) we pass the data output of the AE to the Timeseries dataset and then; 2) feed the resulting
+# dataset to the data generator with appropriate delay of targets; 3) lastly, use the output of the data generator as
+# input to the RNN
 rnn_history = rnn.fit_generator(
     generator=[re_x_train, train_gen],
-    steps_per_epoch=100,
+    steps_per_epoch=200,
     epochs=500,
     callbacks=[EarlyStopping(
         patience=5,
@@ -549,18 +532,122 @@ rnn_history = rnn.fit_generator(
     verbose=2
 )
 
-# %%
-full_history = full.fit_generator(
-    generator=train_gen,
-    steps_per_epoch=100,
+# %% The isolated models
+def make_isolated_ae_rnn(
+        lr=0.001,
+        enc_dim=200
+):
+    # Auto encoder layers
+    # TODO allow the use of generator
+    ae0 = Input(shape=(prod_features,), name='FeaturesInput')
+    encode0 = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1))(ae0)
+    encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1), name='AE_feature_reduction')(encode0)
+    decode0 = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1))(encode)
+    decode = Dense(prod_features, activation='relu', name='AE_3')(decode0)
+
+    # ae0 = Input(shape=(train_prod_feat.shape[0], prod_features,))
+    # shape_re0 = Reshape((prod_features,))(ae0)
+    # encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1))(shape_re0)
+    # decode = Dense(prod_features, activation='relu', name='AE_3')(encode)
+    # shape_re = Reshape((train_prod_feat.shape[0], enc_dim))(encode)
+    # perm = Permute((2, 1))(shape_re)
+
+    # Simple RNN layers
+    # inspired by https://dlpm2016.fbk.eu/docs/esteban_combining.pdf,
+    # https://stackoverflow.com/questions/52474403/keras-time-series-suggestion-for-including-static-and-dynamic-variables-in-lstm,
+    # https://blog.nirida.ai/predicting-e-commerce-consumer-behavior-using-recurrent-neural-networks-36e37f1aed22
+    # https://www.affineanalytics.com/blog/new-product-forecasting-using-deep-learning-a-unique-way/
+    # https://lilianweng.github.io/lil-log/2017/07/22/predict-stock-prices-using-RNN-part-2.html
+    n_neurons = length  # we want the model to predict with length of output == to length of timesteps inputted
+    seq_input = Input(shape=((length + enc_dim) / step, train_ts.shape[-1]))  # Shape: (timesteps, data dimensions)
+    # the number of units is the number of sequential months to predict
+    rnn0 = SimpleRNN(n_neurons, activation='relu', return_sequences=True)(seq_input)
+    out = TimeDistributed(Dense(train_ts.shape[-1], activation='softmax'))(rnn0)
+
+    encoder_ = Model(inputs=ae0, outputs=encode)
+    autoencoder_ = Model(inputs=ae0, outputs=decode)
+    autoencoder_.compile(
+        optimizer=Adam(learning_rate=lr),
+        loss='mae',
+        metrics=['mse', 'cosine_similarity']
+    )
+
+    model_rnn_ = Model(inputs=seq_input, outputs=out)
+    model_rnn_.compile(
+        optimizer=Adam(learning_rate=lr),
+        loss='mae',
+        metrics=['mse']
+    )
+
+    return autoencoder_, encoder_, model_rnn_
+
+#%%
+ae, enc, s_rnn = make_isolated_ae_rnn()
+
+#%%
+ae_history = ae.fit(
+    x=x_train, y=x_train,
+    batch_size=64,
     epochs=500,
+    validation_data=(x_val, x_val),
+    callbacks=[EarlyStopping(
+        patience=20,
+        restore_best_weights=True
+    )],
+    verbose=2
+)
+plot_nn_metrics(ae_history, parameters=['loss', 'cosine_similarity'])
+
+#%%
+out_encoded = enc.predict(train_prod_feat).transpose()
+
+#%%
+minmax.fit(train_ts[:80])
+# comb_ts_prod_train = np.append(out_encoded, minmax.transform(train_ts[:80]), axis=0)
+# comb_ts_prod_valid = np.append(out_encoded, minmax.transform(train_ts[81:]), axis=0)
+
+# %%
+# TODO has to be implemented before making model
+batch_size = 50
+length = 6
+delay = 1
+step = 1
+
+train_gen_comb = data_sequence_generator(
+    data=minmax.transform(train_ts),
+    lookback=length,
+    target=delay,
+    batch_size=batch_size,
+    step=step,
+    aux_data=out_encoded,
+    max_index=80
+)
+
+val_gen_comb = data_sequence_generator(
+    data=minmax.transform(train_ts),
+    lookback=length,
+    target=delay,
+    batch_size=batch_size,
+    step=step,
+    aux_data=out_encoded,
+    min_index=81
+)
+
+#%%
+val_steps = (len(train_ts) - 87 - length)
+
+rnn_history = s_rnn.fit_generator(
+    generator=train_gen_comb,
+    steps_per_epoch=20,
+    epochs=5,
     callbacks=[EarlyStopping(
         patience=5,
         restore_best_weights=True
     )],
-    validation_data=val_gen,
+    validation_data=val_gen_comb,
     validation_steps=val_steps,
     verbose=2
 )
 
-plot_nn_metrics(full_history)
+#%%
+plot_nn_metrics(rnn_history)
