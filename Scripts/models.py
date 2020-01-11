@@ -5,7 +5,7 @@ import tensorflow_probability as tfp
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, SimpleRNN, Dropout, Input, \
-    BatchNormalization, Concatenate, Reshape, TimeDistributed, LSTM, GRU, LeakyReLU,
+    BatchNormalization, TimeDistributed, LSTM, GRU, LeakyReLU
 from tensorflow.keras.optimizers import RMSprop, Adam, Nadam
 from tensorflow.keras.initializers import he_uniform, he_normal
 from tensorflow.keras.activations import relu, tanh, selu, linear
@@ -14,14 +14,15 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import matplotlib.pyplot as plt
-from functools import partial
 from bayes_opt import BayesianOptimization
+
 
 # %%
 class config:
     """
     Configuration class for all primary objects, variables, and functions
     """
+
     def __init__(self, timeseries, product_train, product_test):
         self.colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
         self.train_timeseries = np.array(timeseries.values).astype('int32')
@@ -37,6 +38,7 @@ class config:
         self.ts_delay = 1
         self.ts_split_index = 80
         self.ts_step = 1
+        self.ts_steps_per_epoch = 20
 
     def split_products_train_val(self):
         val_split = 0.25
@@ -173,11 +175,15 @@ class nn:
         self.loss = 'mae'
         self.EPOCHS = 500
         self.BATCH_SIZE = 64
+        self.act_func_dict = [relu, LeakyReLU, tanh, selu, linear]
+        self.optimizer_dict = ['adam', 'nadam', 'rmsprop']
+        self.init_dict = [he_normal(1), he_uniform(1)]
+        self.rnn_kind_dict = ['SimpleRNN', 'LSTM', 'GRU']
 
     @staticmethod
-    def callbacks(save_checkpoint=False, model_name_to_file: str='model'):
+    def callbacks(save_checkpoint=False, model_name_to_file: str = 'model'):
         if model_name_to_file is None:
-            model_name_to_file='model'
+            model_name_to_file = 'model'
 
         early_stopping = EarlyStopping(
             patience=10,
@@ -209,19 +215,21 @@ class nn:
             n_hl_ae=1,  # number of hidden layers before and after encode layer [0,3]
             f_hl_ae=1,  # factor of neuron scaling on hidden layers besides encode layer
             enc_dim=200,  # target dimensions to reduce features
-            initializer=he_normal(1),  # kernel initializer for the dense layers
-            act_func=relu(),  # activation function to use in dense layers
-            opt='adam',  # optimizer to use [adam, nadam, rmsprop]
+            initializer=0,  # kernel initializer for the dense layers
+            act_func=0,  # activation function to use in dense layers
+            opt=0,  # optimizer to use [adam, nadam, rmsprop]
             dropout=0,
             hidden_batch_norm=False,
-            bayes_nn=False
+            # bayes_nn=False
     ):
         # Auto encoder layers
-        enc_l = Dense(enc_dim, activation=act_func, kernel_initializer=initializer, name='Encoder')
-        hl = Dense(enc_dim * f_hl_ae, activation=act_func, kernel_initializer=initializer)
+        enc_l = Dense(enc_dim, activation=self.act_func_dict[act_func],
+                      kernel_initializer=self.init_dict[initializer], name='Encoder')
+        hl = Dense(enc_dim * f_hl_ae, activation=self.act_func_dict[act_func],
+                   kernel_initializer=self.init_dict[initializer])
         drp = Dropout(dropout)
         bn = BatchNormalization()
-        dec_l = Dense(self.prod_feat, activation=act_func, name='Decoder')
+        dec_l = Dense(self.prod_feat, activation=self.act_func_dict[act_func], name='Decoder')
 
         ae_in = Input(shape=(self.prod_feat,), name='FeaturesInput')
         if n_hl_ae == 0:
@@ -238,7 +246,7 @@ class nn:
             x = drp(x)
             x = hl(x)
             if hidden_batch_norm:
-                x =bn(x)
+                x = bn(x)
             encode = enc_l(x)
             x = hl(encode)
             x = hl(x)
@@ -249,7 +257,7 @@ class nn:
             x = hl(x)
             x = hl(x)
             if hidden_batch_norm:
-                x =bn(x)
+                x = bn(x)
             encode = enc_l(x)
             x = hl(encode)
             x = hl(x)
@@ -259,15 +267,15 @@ class nn:
         encoder = Model(inputs=ae_in, outputs=encode)
         autoencoder = Model(inputs=ae_in, outputs=decode)
 
-        if opt == 'adam':
+        if self.optimizer_dict[opt] == 'adam':
             opt = Adam(learning_rate=lr)
-        elif opt == 'nadam':
+        elif self.optimizer_dict[opt] == 'nadam':
             opt = Nadam(learning_rate=lr)
-        elif opt == 'rmsprop':
+        elif self.optimizer_dict[opt] == 'rmsprop':
             opt = RMSprop(learning_rate=lr)
 
         autoencoder.compile(
-            optimizer=opt,
+            optimizer=self.optimizer_dict[opt],
             loss=self.loss,
             metrics=self.ae_metrics,
         )
@@ -277,7 +285,7 @@ class nn:
     # noinspection PyUnboundLocalVariable
     def make_rnn(
             self,
-            n_neurons,  # == length, we want the model to predict with length of output == length of timesteps inputted
+            n_neurons,  # == length or lookback, to predict with length of output == length of timesteps inputted
             n_prod,  # number of products on the timeseries (features dimension)
             enc_ae_dim,  # number of encoded features of products (from autoencoder)
             step,  # number of steps on sliding window of the time series data generator
@@ -285,30 +293,25 @@ class nn:
             n_hl_r=0,  # number of recurrent hidden layers before main rnn layer [0, 3]
             f_hl_r=1,  # factor of neuron scaling on hidden layers besides main rnn layer
             rs_hl_r=False,  # sets return sequences value (True or False) in hidden layers
-            act_func=tanh(),  # activation function to use in rnn layers
-            act_func_td=linear(),  # activation function to use in time TimeDistributed layers
-            rnn_kind='SimpleRNN',  # type of recurrent layer to use [SimpleRNN, LSTM, GRU]
-            opt='adam',  # optimizer to use [adam, nadam, rmsprop]
-            bayes_nn=False
+            act_func=2,  # activation function to use in rnn layers
+            act_func_td=4,  # activation function to use in time TimeDistributed layers
+            rnn_kind=0,  # type of recurrent layer to use [SimpleRNN, LSTM, GRU]
+            opt=0,  # optimizer to use [adam, nadam, rmsprop]
+            # bayes_nn=False
     ):
         # Simple RNN layers
-        # inspired by https://dlpm2016.fbk.eu/docs/esteban_combining.pdf,
-        # https://stackoverflow.com/questions/52474403/keras-time-series-suggestion-for-including-static-and-dynamic-variables-in-lstm,
-        # https://blog.nirida.ai/predicting-e-commerce-consumer-behavior-using-recurrent-neural-networks-36e37f1aed22
-        # https://www.affineanalytics.com/blog/new-product-forecasting-using-deep-learning-a-unique-way/
-        # https://lilianweng.github.io/lil-log/2017/07/22/predict-stock-prices-using-RNN-part-2.html
         # the number of units is == the number of sequential months to predict on each batch
         if rnn_kind not in ['SimpleRNN', 'LSTM', 'GRU']:
             raise ValueError()
 
-        rnn_l = SimpleRNN(n_neurons, activation=act_func, return_sequences=True)
-        rnn_hl = SimpleRNN(n_neurons * f_hl_r, activation=act_func, return_sequences=rs_hl_r)
+        rnn_l = SimpleRNN(n_neurons, activation=self.act_func_dict[act_func], return_sequences=True)
+        rnn_hl = SimpleRNN(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r)
         if rnn_kind == 'LSTM':
-            rnn_l = LSTM(n_neurons, activation=act_func, return_sequences=True)
-            rnn_hl = LSTM(n_neurons * f_hl_r, activation=act_func, return_sequences=rs_hl_r)
+            rnn_l = LSTM(n_neurons, activation=self.act_func_dict[act_func], return_sequences=True)
+            rnn_hl = LSTM(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r)
         elif rnn_kind == 'GRU':
-            rnn_l = GRU(n_neurons, activation=act_func, return_sequences=True)
-            rnn_hl = GRU(n_neurons * f_hl_r, activation=act_func, return_sequences=rs_hl_r)
+            rnn_l = GRU(n_neurons, activation=self.act_func_dict[act_func], return_sequences=True)
+            rnn_hl = GRU(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r)
 
         seq_input = Input(shape=((n_neurons + enc_ae_dim) / step, n_prod))  # Shape: (timesteps, data dimensions)
         if n_hl_r == 0:
@@ -392,73 +395,61 @@ class nn:
         )
         config.plot_nn_metrics(rnn_history)
 
+
 class bayesian_opt:
-    def __init__(self, type_nn:str, continuous_params:dict, discrete_params:dict):
-        self.parameters = None
+    def __init__(self, init_config, type_nn: str, parameters: dict):
+        self.parameters = parameters
         self.n_init_explore_point = 20
         self.n_bayesian_iterations = 20
         self.type_nn = type_nn
-        self.cont_params = continuous_params
-        self.disc_params = discrete_params
-        self.params = {**self.cont_params, **self.disc_params}
+        assert type(init_config) == config
+        self.c = init_config
 
-    def blackbox(self):
+    # TODO finish this part after asserting the rest of the methods
+    def blackbox(self, data, valid_data):
         # Transform range of non discrete parameters into discrete values
-        discrete = self.disc_params
 
         if self.type_nn == 'ae':
             model = nn.make_ae(
-                lr=0.001,
-                n_hl_ae=1,
-                f_hl_ae=1,
-                enc_dim=200,
-                initializer=he_normal(1),
-                act_func=relu(),
-                opt='adam',
-                dropout=0,
-                hidden_batch_norm=False
+
             )
             nn.fit_ae(
-                model, data, valid_data=None, model_name=None
+                ae_model_obj=model, data=data, valid_data=valid_data
             )
             scores = model.evaluate(
-                # x=,
-                # y=,
+                x=data,
+                y=valid_data,
                 verbose=0
             )
         elif self.type_nn == 'rnn':
             model = nn.make_rnn(
-                n_neurons,
-                n_prod,
-                enc_ae_dim,
-                step,
-                lr=0.001,
-                n_hl_r=0,
-                f_hl_r=1,
-                rs_hl_r=False,
-                act_func=tanh(),
-                act_func_td=linear(),
-                rnn_kind='SimpleRNN',
-                opt='adam'
+
             )
             nn.fit_rnn(
-                model, data_gen, full_ts, ts_split_index, lookback,
-                valid_gen=None, model_name=None, steps_p_epoch=20
+                rnn_model_obj=model, data_gen=data, full_ts=self.c.train_timeseries,
+                ts_split_index=self.c.ts_split_index, lookback=self.c.ts_lookback,
+                valid_gen=valid_data, steps_p_epoch=self.c.ts_steps_per_epoch
             )
             scores = model.evaluate_generator(
-                generator=,
-                steps=,
+                generator=valid_data,
                 verbose=0
             )
-        return 1/scores[0]
+
+        return 1 / scores[
+            0]  # this score has to be inverted in order to find the lowest value by maximizing the inverse
 
     def optimizer(self):
         tf.keras.backend.clear_session()
-        bb_partial = partial(self.blackbox())
+
+        def bb_partial(lr, n_hl_ae, f_hl_ae, enc_dim, initializer, act_func, opt, dropout, hidden_batch_norm,
+                       n_neurons, n_prod, enc_ae_dim, step, n_hl_r, f_hl_r, rs_hl_r, act_func_td, rnn_kind):
+            d = int(w)
+            return self.blackbox(lr, n_hl_ae, f_hl_ae, enc_dim, initializer, act_func, opt, dropout, hidden_batch_norm,
+                                 n_neurons, n_prod, enc_ae_dim, step, n_hl_r, f_hl_r, rs_hl_r, act_func_td, rnn_kind)
 
         b_opt = BayesianOptimization(
             f=bb_partial,
-            pbounds=self.params,
+            pbounds=self.parameters,
             verbose=2,
             random_state=0
         )
@@ -467,12 +458,32 @@ class bayesian_opt:
             n_iter=self.n_bayesian_iterations,
 
         )
+        print(b_opt.max)
+
         return b_opt
 
 
-#%%
-initialize = config(
-    data_preprocessing.pts_train_df_zVersion,
-    data_preprocessing.product_train_df_zVersion,
-    data_preprocessing.product_test_df_zVersion
+# %% instantiation of main configuration methods
+i_config = config(
+    timeseries=data_preprocessing.pts_train_df_zVersion,
+    product_train=data_preprocessing.product_train_df_zVersion,
+    product_test=data_preprocessing.product_test_df_zVersion
 )
+
+i_nn = nn(
+    learning_rate=0.001,
+    product_features=i_config.products_features
+)
+
+# %% instantiation of models
+
+ae = i_nn.make_ae()
+rnn = i_nn.make_rnn()
+
+# %% preliminary fitting of models
+
+i_nn.fit_ae(ae_model_obj=ae)
+i_nn.fit_rnn(rnn_model_obj=rnn)
+
+
+
