@@ -137,6 +137,7 @@ product_test_df_zVersion = product_test_df.copy().fillna(0)
 
 # pts_train_df_zVersion fills all NaN of the time series with zeros
 pts_train_df_zVersion = pts_train_df.copy().fillna(0)
+pts_train_df_withoutMark_zVersion = pts_train_df.copy().fillna(0).applymap(lambda x: 0 if x == -2000 else x)
 
 #%%
 # Deletion of non essential variables
