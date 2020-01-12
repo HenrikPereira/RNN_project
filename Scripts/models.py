@@ -1,6 +1,7 @@
-from math import ceil
+# Import of essential libraries
 import numpy as np
 import data_preprocessing
+from math import ceil
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
@@ -18,7 +19,7 @@ import matplotlib.pyplot as plt
 from bayes_opt import BayesianOptimization
 
 
-# %%
+# %% Classes for the easy implementation of our models
 class config:
     """
     Configuration class for all primary objects, variables, and functions
@@ -113,19 +114,20 @@ class config:
             if aux_data is None:
                 # both samples and targets are of equal dimensions because they have same number of features
                 samples = np.zeros((len(rows), self.ts_lookback // self.ts_step, self.train_timeseries.shape[-1]))
-                targets = np.zeros((len(rows), self.ts_lookback // self.ts_step, self.train_timeseries.shape[-1]))
+                targets = np.zeros((len(rows), 1, self.train_timeseries.shape[-1]))
             else:
                 samples = np.zeros(
                     (len(rows), (self.ts_lookback // self.ts_step) + len(aux_data), self.train_timeseries.shape[-1]))
                 targets = np.zeros(
-                    (len(rows), (self.ts_lookback // self.ts_step) + len(aux_data), self.train_timeseries.shape[-1]))
+                    (len(rows), 1, self.train_timeseries.shape[-1]))
 
             for j, row in enumerate(rows):
                 indices = range(rows[j] - self.ts_lookback, rows[j], self.ts_step)
                 indices_target = rows[j] + self.ts_delay
                 if aux_data is not None:
                     samples[j] = np.append(aux_data, self.train_timeseries[indices], axis=0)
-                    targets[j] = np.append(aux_data, self.train_timeseries[indices_target], axis=0)[1]
+                    targets[j] = self.train_timeseries[indices_target]
+                    # self.train_timeseries[indices_target].reshape(1, -1)
                 else:
                     samples[j] = self.train_timeseries[indices]
                     targets[j] = self.train_timeseries[indices_target]
@@ -207,7 +209,10 @@ class nn:
             matrix = (ceil(nr_param / 2), ceil(nr_param / 2))
         plt.figure(figsize=(12, 10))
         for n, metric in enumerate(p_metrics):
-            name = metric.replace("_", " ").capitalize()
+            if metric == tf.keras.metrics.RootMeanSquaredError:
+                name = 'Rmse'
+            else:
+                name = metric.replace("_", " ").capitalize()
             plt.subplot(matrix[0], matrix[1], n + 1)
             plt.plot(nn_history.epoch, nn_history.history[metric],
                      color=nn.colors[0], label='Train')
@@ -469,11 +474,11 @@ class nn:
             verbose=2
         )
 
-        nn.plot_nn_metrics(nn_history=ae_history, parameters=['loss', 'cosine_similarity'])
+        nn.plot_nn_metrics(nn_history=ae_history, parameters=['loss', 'mse', 'cosine_similarity'])
 
         return ae_history
 
-    def fit_rnn(self, rnn_model_obj, data_gen, full_ts, ts_split_index, lookback,
+    def fit_rnn(self, rnn_model_obj, data_gen, full_ts, lookback, ts_split_index=0,
                 valid_gen=None, model_name=None, steps_p_epoch=20, **kwargs):
         """
 
@@ -481,8 +486,8 @@ class nn:
             rnn_model_obj:
             data_gen:
             full_ts:
-            ts_split_index:
             lookback:
+            ts_split_index:
             valid_gen:
             model_name:
             steps_p_epoch:
@@ -512,7 +517,7 @@ class nn:
             validation_steps=val_steps,
             verbose=2
         )
-        nn.plot_nn_metrics(nn_history=rnn_history)
+        nn.plot_nn_metrics(nn_history=rnn_history, parameters=['loss', 'mse'])
 
         return rnn_history
 
@@ -656,10 +661,16 @@ rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_
                     n_hl_r=1, rs_hl_r=True, rnn_kind=2)
 
 # %% preliminary fitting of models
-_ = i_nn.fit_ae(ae_model_obj=ae, data=i_config.x_train, valid_data=i_config.x_val)
-_ = i_nn.fit_rnn(rnn_model_obj=rnn, data_gen=ts_gen_train, full_ts=i_config.train_timeseries,
-                 ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
-                 valid_gen=ts_gen_train)
+ae_hist = i_nn.fit_ae(ae_model_obj=ae, data=i_config.x_train, valid_data=i_config.x_val)
+
+# this rnn configuration is just to check if all is working well
+_ = i_nn.fit_rnn(
+    rnn_model_obj=rnn, data_gen=ts_gen_train, full_ts=i_config.train_timeseries,
+    ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
+    valid_gen=ts_gen_train, epochs=5
+)
+
+# TODO save figure & metrics
 
 # %% instantiate new stacked timeseries generators
 aux_enc = enc.predict(x=i_config.train_products, batch_size=i_nn.BATCH_SIZE).transpose()
@@ -669,10 +680,24 @@ stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
 rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
                     n_hl_r=1, rs_hl_r=True, rnn_kind=2, enc_ae_dim=i_nn.enc_dim)
 
-_ = i_nn.fit_rnn(rnn_model_obj=rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
-                 ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
-                 valid_gen=stack_tsgen_t, epochs=50)
+_ = i_nn.fit_rnn(
+    rnn_model_obj=rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+    lookback=i_config.ts_lookback, ts_split_index=0,
+    valid_gen=stack_tsgen_t, epochs=50
+)
+
+# TODO save figure & metrics
 
 tf.keras.backend.clear_session()
 
-# %%
+# %% optimization of hyper-parameters for the auto-encoder NN
+# TODO save optimization JSON and best hyper-parameters & best model hdf5
+
+# %% optimization of hyper-parameters for the recurrent NN
+# TODO save optimization JSON and best hyper-parameters & best model hdf5
+
+# %% fitting of the test products dataset on optimized auto-encoder
+
+# %% construction of stacked dataset with test products
+
+# %% predict with optimized recurrent NN of stacked dataset with test products
