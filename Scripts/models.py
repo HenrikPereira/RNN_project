@@ -122,14 +122,11 @@ class config:
 
             for j, row in enumerate(rows):
                 indices = range(rows[j] - self.ts_lookback, rows[j], self.ts_step)
-                indices_target = range(
-                    (rows[j] - self.ts_lookback) + self.ts_delay, rows[j], self.ts_step)
+                indices_target = rows[j] + self.ts_delay
                 if aux_data is not None:
                     samples[j] = np.append(aux_data, self.train_timeseries[indices], axis=0)
-                    targets[j] = np.append(aux_data, self.train_timeseries[indices_target], axis=0)
+                    targets[j] = np.append(aux_data, self.train_timeseries[indices_target], axis=0)[1]
                 else:
-                    print(targets.shape)
-                    print(indices_target)
                     samples[j] = self.train_timeseries[indices]
                     targets[j] = self.train_timeseries[indices_target]
 
@@ -339,8 +336,8 @@ class nn:
         else:
             raise ValueError
 
-        encoder = Model(inputs=ae_in, outputs=encode)
-        autoencoder = Model(inputs=ae_in, outputs=decode)
+        _encoder = Model(inputs=ae_in, outputs=encode)
+        _autoencoder = Model(inputs=ae_in, outputs=decode)
 
         if self.optimizer_dict[opt] == 'adam':
             opt_ = Adam(learning_rate=lr)
@@ -350,13 +347,13 @@ class nn:
             opt_ = RMSprop(learning_rate=lr)
         else:
             raise ValueError
-        autoencoder.compile(
+        _autoencoder.compile(
             optimizer=opt_,
             loss=self.loss,
             metrics=self.ae_metrics,
         )
 
-        return autoencoder, encoder
+        return _autoencoder, _encoder
 
     # noinspection PyUnboundLocalVariable
     def make_rnn(self, n_neurons, n_prod, step, enc_ae_dim=0, lr=0.001,
@@ -423,7 +420,7 @@ class nn:
             r = rnn_l(hl)
         out = TimeDistributed(Dense(n_prod, activation=self.act_func_dict[act_func_td]))(r)
 
-        rnn = Model(inputs=seq_input, outputs=out)
+        _rnn = Model(inputs=seq_input, outputs=out)
 
         if self.optimizer_dict[opt] == 'adam':
             opt_ = Adam(learning_rate=lr)
@@ -433,13 +430,13 @@ class nn:
             opt_ = RMSprop(learning_rate=lr)
         else:
             raise ValueError
-        rnn.compile(
+        _rnn.compile(
             optimizer=opt_,
             loss=self.loss,
             metrics=self.r_metrics
         )
 
-        return rnn
+        return _rnn
 
     def fit_ae(self, ae_model_obj, data, valid_data=None, model_name=None, **kwargs):
         """
@@ -645,13 +642,13 @@ i_config = config(
     product_test=data_preprocessing.product_test_df_zVersion,
     ts_lookback=6
 )
-ts_gen_train = i_config.data_sequence_generator(max_index=i_config.ts_split_index)
-ts_gen_val = i_config.data_sequence_generator(min_index=i_config.ts_split_index + 1)
+ts_gen_train = i_config.data_sequence_generator()
+# TODO is validation of TS that really necessary? a product does not have multiple pre_release and releases...
+# ts_gen_val = i_config.data_sequence_generator(min_index=i_config.ts_split_index + 1)
 
 i_config.split_products_train_val()
 
 i_nn = nn(learning_rate=0.001, product_features=i_config.products_features)
-i_nn.callbacks()
 
 # %% instantiation of models
 ae, enc = i_nn.make_ae(n_hl_ae=3)
@@ -662,20 +659,19 @@ rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_
 _ = i_nn.fit_ae(ae_model_obj=ae, data=i_config.x_train, valid_data=i_config.x_val)
 _ = i_nn.fit_rnn(rnn_model_obj=rnn, data_gen=ts_gen_train, full_ts=i_config.train_timeseries,
                  ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
-                 valid_gen=ts_gen_val)
+                 valid_gen=ts_gen_train)
 
 # %% instantiate new stacked timeseries generators
 aux_enc = enc.predict(x=i_config.train_products, batch_size=i_nn.BATCH_SIZE).transpose()
 
-stack_tsgen_t = i_config.data_sequence_generator(max_index=i_config.ts_split_index, aux_data=aux_enc)
-stack_tsgen_v = i_config.data_sequence_generator(min_index=i_config.ts_split_index + 1, aux_data=aux_enc)
+stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
 
 rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
                     n_hl_r=1, rs_hl_r=True, rnn_kind=2, enc_ae_dim=i_nn.enc_dim)
 
-i_nn.fit_rnn(rnn_model_obj=rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
-             ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
-             valid_gen=stack_tsgen_v, epochs=50)
+_ = i_nn.fit_rnn(rnn_model_obj=rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+                 ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
+                 valid_gen=stack_tsgen_t, epochs=50)
 
 tf.keras.backend.clear_session()
 
