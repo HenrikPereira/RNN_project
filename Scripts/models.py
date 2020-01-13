@@ -1,4 +1,5 @@
 # Import of essential libraries
+import pickle
 import numpy as np
 import data_preprocessing
 from math import ceil
@@ -17,7 +18,6 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import matplotlib.pyplot as plt
 from bayes_opt import BayesianOptimization
-
 
 # %% Classes for the easy implementation of our models
 class config:
@@ -46,7 +46,7 @@ class config:
         self.ts_batch_size = 50
         self.ts_lookback = 2  # same as length
         self.ts_delay = 1
-        self.ts_split_index = 80
+        self.ts_split_index = 0
         self.ts_step = 1
         self.ts_steps_per_epoch = 20
         self.__dict__.update((k, v) for k, v in kwargs.items() if k in config.allowed_keys)
@@ -526,11 +526,13 @@ class bayesian_opt:
     """
 
     """
-    allowed_keys = {'lr', 'n_hl_ae', 'f_hl_ae', 'enc_dim', 'initializer', 'act_func', 'opt', 'dropout',
-                    'hidden_batch_norm', 'n_neurons', 'n_prod', 'enc_ae_dim', 'step', 'n_hl_r', 'f_hl_r',
-                    'rs_hl_r', 'act_func_td', 'rnn_kind'}
+    allowed_continuous_keys = {'lr', 'dropout'}
+    allowed_discrete_keys = {
+        'n_hl_ae', 'f_hl_ae', 'enc_dim', 'initializer', 'act_func', 'opt',
+        'hidden_batch_norm', 'n_neurons', 'enc_ae_dim', 'n_hl_r', 'f_hl_r',
+        'rs_hl_r', 'act_func_td', 'rnn_kind'}
 
-    def __init__(self, init_config, type_nn: str, parameters: dict, **kwargs):
+    def __init__(self, init_config: config, nn_config: nn, type_nn: str, parameters: dict, data_gen=None):
         """
 
         Args:
@@ -541,99 +543,101 @@ class bayesian_opt:
         """
         self.parameters = parameters
         self.n_init_explore_point = 20
-        self.n_bayesian_iterations = 20
+        self.n_bayesian_iterations = 10
         self.type_nn = type_nn
-        assert type(init_config) == config
         self.c = init_config
+        self.data_gen = data_gen
+        self.nn_c = nn_config
+        self.model = None
 
         # kwargs for the blackbox
+        # continuous
         self.lr = None
+        self.dropout = None
+
+        # discrete
         self.n_hl_ae = None
         self.f_hl_ae = None
         self.enc_dim = None
         self.initializer = None
         self.act_func = None
         self.opt = None
-        self.dropout = None
         self.hidden_batch_norm = None
         self.n_neurons = None
-        self.n_prod = None
         self.enc_ae_dim = None
-        self.step = None
         self.n_hl_r = None
         self.f_hl_r = None
         self.rs_hl_r = None
         self.act_func_td = None
         self.rnn_kind = None
-        self.__dict__.update((k, v) for k, v in kwargs.items() if k in bayesian_opt.allowed_keys)
 
-    # TODO finish this part after asserting the rest of the methods
-    def blackbox(self, data, valid_data):
-        """
-
-        Args:
-            data:
-            valid_data:
-
-        Returns:
-
-        """
-        # Transform range of non discrete parameters into discrete values
-
+    def blackbox(self):
         if self.type_nn == 'ae':
-            model = nn.make_ae(
-
+            self.model = self.nn_c.make_ae(
+                lr=self.lr,
+                n_hl_ae=self.n_hl_ae,
+                f_hl_ae=self.f_hl_ae,
+                enc_dim=self.enc_dim,
+                initializer=self.initializer,
+                act_func=self.initializer,
+                opt=self.opt,
+                dropout=self.dropout,
+                hidden_batch_norm=self.hidden_batch_norm
             )
-            nn.fit_ae(
-                ae_model_obj=model, data=data, valid_data=valid_data
+            self.nn_c.fit_ae(
+                ae_model_obj=self.model[0], data=self.c.x_train, valid_data=self.c.x_val
             )
-            scores = model.evaluate(
-                x=data,
-                y=valid_data,
+            scores = self.model[0].evaluate(
+                x=self.c.x_train,
+                y=self.c.x_val,
                 verbose=0
             )
         elif self.type_nn == 'rnn':
-            model = nn.make_rnn(
-
+            model = self.nn_c.make_rnn(
+                n_neurons=self.c.ts_lookback, n_prod=self.c.total_train_products, step=self.c.ts_step,
+                enc_ae_dim=self.enc_ae_dim,
+                lr=self.lr,
+                n_hl_r=self.n_hl_r,
+                f_hl_r=self.f_hl_r,
+                rs_hl_r=self.rs_hl_r,
+                act_func=self.act_func,
+                act_func_td=self.act_func_td,
+                rnn_kind=self.rnn_kind,
+                opt=self.opt
             )
-            nn.fit_rnn(
-                rnn_model_obj=model, data_gen=data, full_ts=self.c.train_timeseries,
-                ts_split_index=self.c.ts_split_index, lookback=self.c.ts_lookback,
-                valid_gen=valid_data, steps_p_epoch=self.c.ts_steps_per_epoch
+            self.nn_c.fit_rnn(
+                rnn_model_obj=model, data_gen=self.data_gen, full_ts=self.c.train_timeseries,
+                ts_split_index=0, lookback=self.c.ts_lookback,
+                valid_gen=self.data_gen, steps_p_epoch=self.c.ts_steps_per_epoch
             )
             scores = model.evaluate_generator(
-                generator=valid_data,
+                generator=self.data_gen,
+                steps=5,
                 verbose=0
             )
 
-        return 1 / scores[
-            0]  # this score has to be inverted in order to find the lowest value by maximizing the inverse
+        # this score has to be inverted in order to find the lowest value by maximizing the inverse
+        return 1 / scores[0]
 
-    def optimizer(self):
-        """
+    def bb_partial(self, **kwargs):
+        self.__dict__.update((k, v) for k, v in kwargs.items() if k in bayesian_opt.allowed_continuous_keys)
+        self.__dict__.update((k, int(v)) for k, v in kwargs.items() if k in bayesian_opt.allowed_discrete_keys)
 
-        Returns:
+        return self.blackbox
 
-        """
-        tf.keras.backend.clear_session()
-
-        def bb_partial():
-            n_hl_ae = int(self.n_hl_ae)
-            f_hl_ae = int(f_hl_ae)
-
-            return self.blackbox(lr, n_hl_ae, f_hl_ae, enc_dim, initializer, act_func, opt, dropout, hidden_batch_norm,
-                                 n_neurons, n_prod, enc_ae_dim, step, n_hl_r, f_hl_r, rs_hl_r, act_func_td, rnn_kind)
-
+    @staticmethod
+    def optimizer(initializer):
         b_opt = BayesianOptimization(
-            f=bb_partial,
-            pbounds=self.parameters,
+            f=initializer.bb_partial,
+            pbounds=initializer.parameters,
             verbose=2,
             random_state=0
         )
         b_opt.maximize(
-            init_points=self.n_init_explore_point,
-            n_iter=self.n_bayesian_iterations,
-
+            init_points=initializer.n_init_explore_point,
+            n_iter=initializer.n_bayesian_iterations,
+            acq="poi",  # Acquisition Function "Probability of Improvement" --> Prefer exploration (with xi=0.1)
+            xi=1e-1
         )
         print(b_opt.max)
 
@@ -655,12 +659,12 @@ i_config.split_products_train_val()
 
 i_nn = nn(learning_rate=0.001, product_features=i_config.products_features)
 
-# %% instantiation of models
+# instantiation of models
 ae, enc = i_nn.make_ae(n_hl_ae=3)
 rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
                     n_hl_r=1, rs_hl_r=True, rnn_kind=2)
 
-# %% preliminary fitting of models
+# preliminary fitting of models
 ae_hist = i_nn.fit_ae(ae_model_obj=ae, data=i_config.x_train, valid_data=i_config.x_val)
 
 # this rnn configuration is just to check if all is working well
@@ -670,31 +674,104 @@ _ = i_nn.fit_rnn(
     valid_gen=ts_gen_train, epochs=5
 )
 
-# TODO save figure & metrics
+i_nn.plot_nn_metrics(ae_hist, title='Autoencoder3hl', save=True)
 
-# %% instantiate new stacked timeseries generators
+# instantiate new stacked timeseries generators
 aux_enc = enc.predict(x=i_config.train_products, batch_size=i_nn.BATCH_SIZE).transpose()
 
 stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
 
-rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
-                    n_hl_r=1, rs_hl_r=True, rnn_kind=2, enc_ae_dim=i_nn.enc_dim)
+# make 3 different RNNs, using the layers SimpleRNN, LSTM and GRU respectively
+s_rnn = i_nn.make_rnn(
+    n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
+    n_hl_r=1, rs_hl_r=True, rnn_kind=0, enc_ae_dim=i_nn.enc_dim)
 
-_ = i_nn.fit_rnn(
-    rnn_model_obj=rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+LSTM_rnn = i_nn.make_rnn(
+    n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
+    n_hl_r=1, rs_hl_r=True, rnn_kind=1, enc_ae_dim=i_nn.enc_dim)
+
+GRU_rnn = i_nn.make_rnn(
+    n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
+    n_hl_r=1, rs_hl_r=True, rnn_kind=2, enc_ae_dim=i_nn.enc_dim)
+
+# fitting of said RNNs
+s_rnn_h = i_nn.fit_rnn(
+    rnn_model_obj=s_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
     lookback=i_config.ts_lookback, ts_split_index=0,
-    valid_gen=stack_tsgen_t, epochs=50
+    valid_gen=stack_tsgen_t, epochs=10
 )
 
-# TODO save figure & metrics
+lstm_rnn_h = i_nn.fit_rnn(
+    rnn_model_obj=LSTM_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+    lookback=i_config.ts_lookback, ts_split_index=0,
+    valid_gen=stack_tsgen_t, epochs=10
+)
 
+gru_rnn_h = i_nn.fit_rnn(
+    rnn_model_obj=GRU_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+    lookback=i_config.ts_lookback, ts_split_index=0,
+    valid_gen=stack_tsgen_t, epochs=10
+)
+
+# %% Models plots & figures & metrics
+models = [ae, s_rnn, LSTM_rnn, GRU_rnn]
+histories = [ae_hist, s_rnn_h, lstm_rnn_h, gru_rnn_h]
+labels = ['auto_encoder', 'simple_rnn', 'lstm', 'gru']
+
+for i, m in zip(labels, models):
+    plot_model(m, to_file=r'./Logs/Temp/' + i + 'model.png', expand_nested=True, show_shapes=True)
+
+
+for i, h in zip(labels, histories):
+    # https://stackoverflow.com/questions/41061457/keras-how-to-save-the-training-history-attribute-of-the-history-object
+    with open(r'./Logs/' + i, 'wb') as file_pi:
+        pickle.dump(h.history, file_pi)
+
+    while i == 0:
+        i_nn.plot_nn_metrics(
+            nn_history=h, parameters=['loss', 'mse', 'cosine_similarity'], title=i + 'metrics', save=True)
+    else:
+        i_nn.plot_nn_metrics(
+            nn_history=h, parameters=['loss', 'mse'], title=i + 'metrics', save=True)
+
+# %%
+# TODO: try to extract everything in one shot
+ae_hist_df = pd.DataFrame(ae_hist.history)
+s_rnn_h_df = pd.DataFrame(s_rnn_h.history)
+lstm_rnn_h_df = pd.DataFrame(lstm_rnn_h.history)
+gru_rnn_h_df = pd.DataFrame(gru_rnn_h.history)
+
+# %% clearing memory...
 tf.keras.backend.clear_session()
 
 # %% optimization of hyper-parameters for the auto-encoder NN
 # TODO save optimization JSON and best hyper-parameters & best model hdf5
+ae_params = {
+    'lr': (0.1, 0.01),
+    'n_hl_ae': (0, 3),
+    'f_hl_ae': (1, 2),
+    'enc_dim': (100, 300),
+    'initializer': (0, 1),
+    'act_func': (0, 4),
+    'opt': (0, 2),
+    'dropout': (0, 0.49),
+    'hidden_batch_norm': (0, 1)
+}
+i_optimizer_ae = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='ae', parameters=ae_params)
+ae_opt = i_optimizer_ae.optimizer(i_optimizer_ae)
+print(ae_opt.max)
+
+# %% fitting of whole products using best hyper-parameters and generation of corresponding ts data generator
+
 
 # %% optimization of hyper-parameters for the recurrent NN
 # TODO save optimization JSON and best hyper-parameters & best model hdf5
+rnn_params = {
+
+}
+i_optimizer_rnn = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='ae', parameters=rnn_params)
+rnn_opt = i_optimizer_rnn.optimizer()
+print(rnn_opt.max)
 
 # %% fitting of the test products dataset on optimized auto-encoder
 
