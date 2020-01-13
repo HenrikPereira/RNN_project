@@ -395,14 +395,14 @@ class nn:
                            name=self.rnn_kind_dict[rnn_kind] + 'hidden1st')
         rnn_hl2 = SimpleRNN(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r,
                             name=self.rnn_kind_dict[rnn_kind] + 'hidden2nd')
-        if rnn_kind == 'LSTM':
+        if self.rnn_kind_dict[rnn_kind] == 'LSTM':
             rnn_l = LSTM(n_neurons, activation=self.act_func_dict[act_func], return_sequences=True,
                          name=self.rnn_kind_dict[rnn_kind])
             rnn_hl = LSTM(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r,
                           name=self.rnn_kind_dict[rnn_kind] + 'hidden1st')
             rnn_hl2 = LSTM(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r,
                            name=self.rnn_kind_dict[rnn_kind] + 'hidden2nd')
-        elif rnn_kind == 'GRU':
+        elif self.rnn_kind_dict[rnn_kind] == 'GRU':
             rnn_l = GRU(n_neurons, activation=self.act_func_dict[act_func], return_sequences=True,
                         name=self.rnn_kind_dict[rnn_kind])
             rnn_hl = GRU(n_neurons * f_hl_r, activation=self.act_func_dict[act_func], return_sequences=rs_hl_r,
