@@ -797,9 +797,9 @@ i_nn.fit_ae(
 
 aux_enc = enc.predict(i_config.train_products, i_nn.BATCH_SIZE)
 
-stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
+stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc.transpose())
 
-# optimization of hyper-parameters for the recurrent NN
+# %% optimization of hyper-parameters for the recurrent NN
 # TODO save best model hdf5
 s_rnn_params = {
     'lr': (0.1, 0.001),
@@ -827,13 +827,13 @@ gru_rnn_params = {
 }
 i_optimizer_srnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=0,
-    parameters=s_rnn_params, enc_dim=target_ae['enc_dim'])
+    parameters=s_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
 i_optimizer_lstmrnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=1,
-    parameters=lstm_rnn_params, enc_dim=target_ae['enc_dim'])
+    parameters=lstm_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
 i_optimizer_grurnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=2,
-    parameters=gru_rnn_params, enc_dim=target_ae['enc_dim'])
+    parameters=gru_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
 
 s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
 tf.keras.backend.clear_session()
