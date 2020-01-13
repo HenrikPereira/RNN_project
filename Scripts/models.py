@@ -18,6 +18,8 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import matplotlib.pyplot as plt
 from bayes_opt import BayesianOptimization
+from bayes_opt.observer import JSONLogger
+from bayes_opt.event import Events
 
 # %% Classes for the easy implementation of our models
 class config:
@@ -179,7 +181,7 @@ class nn:
         self.loss = 'mae'
         self.EPOCHS = 500
         self.BATCH_SIZE = 64
-        self.act_func_dict = [relu, LeakyReLU, tanh, selu, linear]
+        self.act_func_dict = [relu, tanh, selu, linear, LeakyReLU]
         self.optimizer_dict = ['adam', 'nadam', 'rmsprop']
         self.init_dict = [he_normal(1), he_uniform(1)]
         self.rnn_kind_dict = ['SimpleRNN', 'LSTM', 'GRU']
@@ -362,7 +364,7 @@ class nn:
 
     # noinspection PyUnboundLocalVariable
     def make_rnn(self, n_neurons, n_prod, step, enc_ae_dim=0, lr=0.001,
-                 n_hl_r=0, f_hl_r=1, rs_hl_r=False, act_func=2, act_func_td=4, rnn_kind=0, opt=0):
+                 n_hl_r=0, f_hl_r=1, rs_hl_r=False, act_func=2, act_func_td=3, rnn_kind=0, opt=0):
         """
 
         Args:
@@ -465,13 +467,18 @@ class nn:
         else:
             _epochs = self.EPOCHS
 
+        if 'verbose' in kwargs.keys():
+            _verbose = kwargs['verbose']
+        else:
+            _verbose = 2
+
         ae_history = ae_model_obj.fit(
             x=data, y=data,
             batch_size=self.BATCH_SIZE,
             epochs=_epochs,
             validation_data=val,
             callbacks=self.callbacks(model_name_to_file=model_name),
-            verbose=2
+            verbose=_verbose
         )
 
         nn.plot_nn_metrics(nn_history=ae_history, parameters=['loss', 'mse', 'cosine_similarity'])
@@ -506,6 +513,11 @@ class nn:
         else:
             _epochs = self.EPOCHS
 
+        if 'verbose' in kwargs.keys():
+            _verbose = kwargs['verbose']
+        else:
+            _verbose = 2
+
         val_steps = (len(full_ts) - ts_split_index - lookback)
 
         rnn_history = rnn_model_obj.fit_generator(
@@ -515,7 +527,7 @@ class nn:
             callbacks=self.callbacks(model_name_to_file=model_name),
             validation_data=val,
             validation_steps=val_steps,
-            verbose=2
+            verbose=_verbose
         )
         nn.plot_nn_metrics(nn_history=rnn_history, parameters=['loss', 'mse'])
 
@@ -579,21 +591,22 @@ class bayesian_opt:
                 f_hl_ae=self.f_hl_ae,
                 enc_dim=self.enc_dim,
                 initializer=self.initializer,
-                act_func=self.initializer,
+                act_func=self.act_func,
                 opt=self.opt,
                 dropout=self.dropout,
                 hidden_batch_norm=self.hidden_batch_norm
             )
             self.nn_c.fit_ae(
-                ae_model_obj=self.model[0], data=self.c.x_train, valid_data=self.c.x_val
+                ae_model_obj=self.model[0], data=self.c.x_train, valid_data=self.c.x_val,
+                verbose=0
             )
             scores = self.model[0].evaluate(
                 x=self.c.x_train,
-                y=self.c.x_val,
+                y=self.c.x_train,
                 verbose=0
             )
         elif self.type_nn == 'rnn':
-            model = self.nn_c.make_rnn(
+            self.model = self.nn_c.make_rnn(
                 n_neurons=self.c.ts_lookback, n_prod=self.c.total_train_products, step=self.c.ts_step,
                 enc_ae_dim=self.enc_ae_dim,
                 lr=self.lr,
@@ -606,11 +619,12 @@ class bayesian_opt:
                 opt=self.opt
             )
             self.nn_c.fit_rnn(
-                rnn_model_obj=model, data_gen=self.data_gen, full_ts=self.c.train_timeseries,
+                rnn_model_obj=self.model, data_gen=self.data_gen, full_ts=self.c.train_timeseries,
                 ts_split_index=0, lookback=self.c.ts_lookback,
-                valid_gen=self.data_gen, steps_p_epoch=self.c.ts_steps_per_epoch
+                valid_gen=self.data_gen, steps_p_epoch=self.c.ts_steps_per_epoch,
+                verbose=0
             )
-            scores = model.evaluate_generator(
+            scores = self.model.evaluate_generator(
                 generator=self.data_gen,
                 steps=5,
                 verbose=0
@@ -623,26 +637,51 @@ class bayesian_opt:
         self.__dict__.update((k, v) for k, v in kwargs.items() if k in bayesian_opt.allowed_continuous_keys)
         self.__dict__.update((k, int(v)) for k, v in kwargs.items() if k in bayesian_opt.allowed_discrete_keys)
 
-        return self.blackbox
+        return self.blackbox()
 
-    @staticmethod
-    def optimizer(initializer):
+    def optimizer(self, log_json=False, **kwargs):
+        allow = ['n_init_explore_point', 'n_bayesian_iterations']
+        self.__dict__.update((k, v) for k, v in kwargs.items() if k in allow)
+
         b_opt = BayesianOptimization(
-            f=initializer.bb_partial,
-            pbounds=initializer.parameters,
+            f=self.bb_partial,
+            pbounds=self.parameters,
             verbose=2,
             random_state=0
         )
+
+        if log_json:
+            logger = JSONLogger(path=r'./Logs/' + self.type_nn + '.json')
+            b_opt.subscribe(Events.OPTMIZATION_STEP, logger)
+
         b_opt.maximize(
-            init_points=initializer.n_init_explore_point,
-            n_iter=initializer.n_bayesian_iterations,
+            init_points=self.n_init_explore_point,
+            n_iter=self.n_bayesian_iterations,
             acq="poi",  # Acquisition Function "Probability of Improvement" --> Prefer exploration (with xi=0.1)
             xi=1e-1
         )
-        print(b_opt.max)
+        print('best parameters:', b_opt.max)
 
         return b_opt
 
+    def param_decode(self, optimizer_max_params):
+        keys = optimizer_max_params.keys()
+        values = optimizer_max_params.values()
+        _new = {}
+        for k, v in zip(keys, values):
+            if k in self.allowed_continuous_keys:
+                _new[k] = v
+            else:
+                _new[k] = int(v)
+
+        # for k in d_keys:
+        #     self.nn_c.act_func_dict = [relu, tanh, selu, linear, LeakyReLU]
+        #     self.nn_c.optimizer_dict = ['adam', 'nadam', 'rmsprop']
+        #     self.nn_c.init_dict = [he_normal(1), he_uniform(1)]
+        #     self.nn_c.rnn_kind_dict = ['SimpleRNN', 'LSTM', 'GRU']
+
+        print(_new)
+        return _new
 
 # %% instantiation of main configuration methods
 i_config = config(
@@ -664,10 +703,10 @@ ae, enc = i_nn.make_ae(n_hl_ae=3)
 rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
                     n_hl_r=1, rs_hl_r=True, rnn_kind=2)
 
-# preliminary fitting of models
+# %% preliminary fitting of models
 ae_hist = i_nn.fit_ae(ae_model_obj=ae, data=i_config.x_train, valid_data=i_config.x_val)
 
-# this rnn configuration is just to check if all is working well
+# %% this rnn configuration is just to check if all is working well
 _ = i_nn.fit_rnn(
     rnn_model_obj=rnn, data_gen=ts_gen_train, full_ts=i_config.train_timeseries,
     ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
@@ -676,7 +715,7 @@ _ = i_nn.fit_rnn(
 
 i_nn.plot_nn_metrics(ae_hist, title='Autoencoder3hl', save=True)
 
-# instantiate new stacked timeseries generators
+# %% instantiate new stacked timeseries generators
 aux_enc = enc.predict(x=i_config.train_products, batch_size=i_nn.BATCH_SIZE).transpose()
 
 stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
@@ -747,31 +786,74 @@ tf.keras.backend.clear_session()
 # %% optimization of hyper-parameters for the auto-encoder NN
 # TODO save optimization JSON and best hyper-parameters & best model hdf5
 ae_params = {
-    'lr': (0.1, 0.01),
+    'lr': (0.1, 0.001),
     'n_hl_ae': (0, 3),
     'f_hl_ae': (1, 2),
     'enc_dim': (100, 300),
     'initializer': (0, 1),
-    'act_func': (0, 4),
+    'act_func': (0, 3),
     'opt': (0, 2),
     'dropout': (0, 0.49),
     'hidden_batch_norm': (0, 1)
 }
 i_optimizer_ae = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='ae', parameters=ae_params)
-ae_opt = i_optimizer_ae.optimizer(i_optimizer_ae)
-print(ae_opt.max)
+ae_opt = i_optimizer_ae.optimizer(n_init_explore_point=60, n_bayesian_iterations=60, log_json=True)
 
 # %% fitting of whole products using best hyper-parameters and generation of corresponding ts data generator
+target_ae = i_optimizer_ae.param_decode(ae_opt.max['params'])
 
+ae, enc = i_nn.make_ae(
+    target_ae['lr'], target_ae['n_hl_ae'], target_ae['f_hl_ae'], target_ae['enc_dim'], target_ae['initializer'],
+    target_ae['act_func'], target_ae['opt'], target_ae['dropout'], target_ae['hidden_batch_norm']
+)
+
+i_nn.fit_ae(ae, i_config.train_products, model_name='final_ae', verbose=0)
+
+aux_enc = enc.predict(i_config.train_products, i_nn.BATCH_SIZE)
+
+stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
 
 # %% optimization of hyper-parameters for the recurrent NN
 # TODO save optimization JSON and best hyper-parameters & best model hdf5
-rnn_params = {
-
+s_rnn_params = {
+    'enc_ae_dim': target_ae['enc_dim'],
+    'lr': (0.1, 0.001),
+    'n_hl_r': (0, 3),
+    'f_hl_r': (1, 2),
+    'rs_hl_r': 1,
+    'act_func': (0, 3),
+    'act_func_td': (1, 3),
+    'rnn_kind': 0,
+    'opt': (0, 2)
 }
-i_optimizer_rnn = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='ae', parameters=rnn_params)
-rnn_opt = i_optimizer_rnn.optimizer()
-print(rnn_opt.max)
+lstm_rnn_params = {
+    'enc_ae_dim': target_ae['enc_dim'],
+    'lr': (0.1, 0.001),
+    'n_hl_r': (0, 3),
+    'f_hl_r': (1, 2),
+    'rs_hl_r': 1,
+    'act_func': (0, 3),
+    'act_func_td': (1, 3),
+    'rnn_kind': 1,
+    'opt': (0, 2)
+}
+gru_rnn_params = {
+    'enc_ae_dim': target_ae['enc_dim'],
+    'lr': (0.1, 0.001),
+    'n_hl_r': (0, 3),
+    'f_hl_r': (1, 2),
+    'rs_hl_r': 1,
+    'act_func': (0, 3),
+    'act_func_td': (1, 3),
+    'rnn_kind': 2,
+    'opt': (0, 2)
+}
+i_optimizer_srnn = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='rnn', parameters=s_rnn_params)
+i_optimizer_lstmrnn = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='rnn', parameters=lstm_rnn_params)
+i_optimizer_grurnn = bayesian_opt(init_config=i_config, nn_config=i_nn, type_nn='rnn', parameters=gru_rnn_params)
+s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
+lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
+gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
 
 # %% fitting of the test products dataset on optimized auto-encoder
 
