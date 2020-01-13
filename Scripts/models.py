@@ -52,6 +52,7 @@ class config:
         self.ts_split_index = 0
         self.ts_step = 1
         self.ts_steps_per_epoch = 20
+        self.ts_minmax = None
         self.__dict__.update((k, v) for k, v in kwargs.items() if k in config.allowed_keys)
 
         # product splits
@@ -100,6 +101,10 @@ class config:
         if max_index is None:
             max_index = len(self.train_timeseries) - self.ts_delay - 1
 
+        minmax = MinMaxScaler()
+        self.ts_minmax = minmax.fit(self.train_timeseries)
+        timeseries = minmax.transform(self.train_timeseries)
+
         _i = min_index + self.ts_lookback
         while 1:
             if shuffle:
@@ -128,12 +133,11 @@ class config:
                 indices = range(rows[j] - self.ts_lookback, rows[j], self.ts_step)
                 indices_target = rows[j] + self.ts_delay
                 if aux_data is not None:
-                    samples[j] = np.append(aux_data, self.train_timeseries[indices], axis=0)
-                    targets[j] = self.train_timeseries[indices_target]
-                    # self.train_timeseries[indices_target].reshape(1, -1)
+                    samples[j] = np.append(aux_data, timeseries[indices], axis=0)
+                    targets[j] = timeseries[indices_target]
                 else:
-                    samples[j] = self.train_timeseries[indices]
-                    targets[j] = self.train_timeseries[indices_target]
+                    samples[j] = timeseries[indices]
+                    targets[j] = timeseries[indices_target]
 
             # with yield the function returns a generator, instead of an array of arrays,
             # that will be feed to an fit_generator method of our NN model
@@ -710,14 +714,7 @@ rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_
 # preliminary fitting of models
 ae_hist = i_nn.fit_ae(ae_model_obj=ae, data=i_config.x_train, valid_data=i_config.x_val)
 
-# this rnn configuration is just to check if all is working well
-_ = i_nn.fit_rnn(
-    rnn_model_obj=rnn, data_gen=ts_gen_train, full_ts=i_config.train_timeseries,
-    ts_split_index=i_config.ts_split_index, lookback=i_config.ts_lookback,
-    valid_gen=ts_gen_train, epochs=5
-)
-
-i_nn.plot_nn_metrics(ae_hist, title='Autoencoder3hl', save=True)
+i_nn.plot_nn_metrics(ae_hist, title='Autoencoder_3hl', save=True)
 
 # instantiate new stacked timeseries generators
 aux_enc = enc.predict(x=i_config.train_products, batch_size=i_nn.BATCH_SIZE).transpose()
@@ -733,7 +730,7 @@ s_rnn = i_nn.make_rnn(
 s_rnn_h = i_nn.fit_rnn(
     rnn_model_obj=s_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
     lookback=i_config.ts_lookback, ts_split_index=0,
-    valid_gen=stack_tsgen_t, epochs=10
+    valid_gen=stack_tsgen_t, epochs=5
 )
 
 # Models plots & figures & metrics
@@ -830,6 +827,7 @@ gru_rnn_params = {
 i_optimizer_srnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=0,
     parameters=s_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
+# %%
 i_optimizer_lstmrnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=1,
     parameters=lstm_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
