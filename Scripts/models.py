@@ -22,6 +22,7 @@ from bayes_opt import BayesianOptimization
 from bayes_opt.observer import JSONLogger
 from bayes_opt.event import Events
 
+
 # Classes for the easy implementation of our models
 class config:
     """
@@ -691,7 +692,8 @@ class bayesian_opt:
         print(_new)
         return _new
 
-# instantiation of main configuration methods
+
+# %% instantiation of main configuration methods
 i_config = config(
     timeseries=data_preprocessing.pts_train_df_zVersion,
     product_train=data_preprocessing.product_train_df_zVersion,
@@ -706,7 +708,7 @@ i_config.split_products_train_val()
 
 i_nn = nn(learning_rate=0.001, product_features=i_config.products_features)
 
-# instantiation of models
+# %% instantiation of models
 ae, enc = i_nn.make_ae(n_hl_ae=3)
 rnn = i_nn.make_rnn(n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
                     n_hl_r=1, rs_hl_r=True, rnn_kind=2)
@@ -721,7 +723,7 @@ aux_enc = enc.predict(x=i_config.train_products, batch_size=i_nn.BATCH_SIZE).tra
 
 stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc)
 
-# make RNN using the stacked data generator
+# %% make RNN using the stacked data generator
 s_rnn = i_nn.make_rnn(
     n_neurons=i_config.ts_lookback, n_prod=i_config.total_train_products, step=i_config.ts_step,
     n_hl_r=1, rs_hl_r=True, rnn_kind=0, enc_ae_dim=i_nn.enc_dim)
@@ -741,7 +743,6 @@ labels = ['auto_encoder', 'simple_rnn']
 for i, m in zip(labels, models):
     plot_model(m, to_file=r'./Logs/Temp/' + i + 'model.png', expand_nested=True, show_shapes=True)
 
-
 for i, h in zip(labels, histories):
     # https://stackoverflow.com/questions/41061457/keras-how-to-save-the-training-history-attribute-of-the-history-object
     with open(r'./Logs/' + i, 'wb') as file_pi:
@@ -760,7 +761,7 @@ s_rnn_h_df = pd.DataFrame(s_rnn_h.history)
 # clearing memory...
 tf.keras.backend.clear_session()
 
-# optimization of hyper-parameters for the auto-encoder NN
+# %% optimization of hyper-parameters for the auto-encoder NN
 # TODO save best model hdf5
 ae_params = {
     'lr': (0.1, 0.001),
@@ -781,6 +782,15 @@ tf.keras.backend.clear_session()
 # fitting of whole products using best hyper-parameters and generation of corresponding ts data generator
 target_ae = i_optimizer_ae.param_decode(ae_opt.max['params'])
 
+# ae, enc = i_nn.make_ae(
+#     target_ae['lr'], target_ae['n_hl_ae'], target_ae['f_hl_ae'], target_ae['enc_dim'], target_ae['initializer'],
+#     target_ae['act_func'], target_ae['opt'], target_ae['dropout'], target_ae['hidden_batch_norm']
+# )
+
+# %% BEST hyper parameters for Auto Encoder !!!
+target_ae = {"act_func": 2, "dropout": 0.36684517372676817, "enc_dim": 280, "f_hl_ae": 1, "hidden_batch_norm": False,
+             "initializer": 0, "lr": 0.004768298523824321, "n_hl_ae": 0, "opt": 0}
+
 ae, enc = i_nn.make_ae(
     target_ae['lr'], target_ae['n_hl_ae'], target_ae['f_hl_ae'], target_ae['enc_dim'], target_ae['initializer'],
     target_ae['act_func'], target_ae['opt'], target_ae['dropout'], target_ae['hidden_batch_norm']
@@ -798,7 +808,7 @@ aux_enc = enc.predict(i_config.train_products, i_nn.BATCH_SIZE)
 
 stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc.transpose())
 
-# optimization of hyper-parameters for the recurrent NN
+# %% optimization of hyper-parameters for the recurrent NN
 # TODO save best model hdf5
 s_rnn_params = {
     'lr': (0.1, 0.001),
@@ -824,46 +834,118 @@ gru_rnn_params = {
     'act_func_td': (1, 3),
     'opt': (0, 2)
 }
+
 i_optimizer_srnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=0,
     parameters=s_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
-# %%
 i_optimizer_lstmrnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=1,
     parameters=lstm_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
 i_optimizer_grurnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=2,
     parameters=gru_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
-
-s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=10, n_bayesian_iterations=10, log_json=True)
+# %%
+s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=5, log_json=True)
 tf.keras.backend.clear_session()
 print('Bayesian Optimization of Simple RNN, Done!...')
-
-lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=10, n_bayesian_iterations=10, log_json=True)
+# %%
+lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=5, log_json=True)
 tf.keras.backend.clear_session()
 print('Bayesian Optimization of LSTM RNN, Done!...')
-
-gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=10, n_bayesian_iterations=10, log_json=True)
+# %%
+gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=5, log_json=True)
 tf.keras.backend.clear_session()
 print('Bayesian Optimization of GRU RNN, Done!...')
 
+# %% BEST hyper parameters for SRNN !!!
+target_srnn = {"act_func": 1, "act_func_td": 2, "f_hl_r": 1, "lr": 0.04605656488330721, "n_hl_r": 1, "opt": 1}
+
+s_rnn = i_nn.make_rnn(
+    act_func=target_srnn['act_func'], act_func_td=target_srnn['act_func_td'],
+    f_hl_r=target_srnn['f_hl_r'], lr=target_srnn['lr'],
+    n_hl_r=target_srnn['n_hl_r'], opt=target_srnn['opt'],
+    enc_ae_dim=target_ae['enc_dim'], n_neurons=i_config.ts_lookback,
+    n_prod=i_config.total_train_products, step=i_config.ts_step,
+    rs_hl_r=True, rnn_kind=0
+)
+
+s_rnn_h = i_nn.fit_rnn(
+    rnn_model_obj=s_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+    lookback=i_config.ts_lookback, ts_split_index=0,
+    valid_gen=stack_tsgen_t, epochs=5
+)
+
+# BEST hyper parameters for LSTM !!!
+target_lstmrnn = {"act_func": 1, "act_func_td": 2, "f_hl_r": 1, "lr": 0.04605656488330721, "n_hl_r": 1, "opt": 1}
+
+lstm_rnn = i_nn.make_rnn(
+    act_func=target_lstmrnn['act_func'], act_func_td=target_lstmrnn['act_func_td'],
+    f_hl_r=target_lstmrnn['f_hl_r'], lr=target_lstmrnn['lr'],
+    n_hl_r=target_lstmrnn['n_hl_r'], opt=target_lstmrnn['opt'],
+    enc_ae_dim=target_ae['enc_dim'], n_neurons=i_config.ts_lookback,
+    n_prod=i_config.total_train_products, step=i_config.ts_step,
+    rs_hl_r=True, rnn_kind=1
+)
+
+lstm_rnn_h = i_nn.fit_rnn(
+    rnn_model_obj=lstm_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+    lookback=i_config.ts_lookback, ts_split_index=0,
+    valid_gen=stack_tsgen_t, epochs=5
+)
+
+# BEST hyper parameters for GRU !!!
+target_grurnn = {"act_func": 1, "act_func_td": 2, "f_hl_r": 1, "lr": 0.04605656488330721, "n_hl_r": 1, "opt": 1}
+
+gru_rnn = i_nn.make_rnn(
+    act_func=target_grurnn['act_func'], act_func_td=target_grurnn['act_func_td'],
+    f_hl_r=target_lstmrnn['f_hl_r'], lr=target_grurnn['lr'],
+    n_hl_r=target_grurnn['n_hl_r'], opt=target_grurnn['opt'],
+    enc_ae_dim=target_ae['enc_dim'], n_neurons=i_config.ts_lookback,
+    n_prod=i_config.total_train_products, step=i_config.ts_step,
+    rs_hl_r=True, rnn_kind=2
+)
+
+gru_rnn_h = i_nn.fit_rnn(
+    rnn_model_obj=gru_rnn, data_gen=stack_tsgen_t, full_ts=i_config.train_timeseries,
+    lookback=i_config.ts_lookback, ts_split_index=0,
+    valid_gen=stack_tsgen_t, epochs=5
+)
+
 # %% fitting of the test products dataset on optimized auto-encoder
-
-
-# %% construction of stacked dataset with test products
-
+# construction of stacked dataset with test products
 # encoder prediction with test products
-aux_enc_test = enc.predict(x=i_config.test_products, batch_size=i_nn.BATCH_SIZE).transpose()
+aux_enc_test = enc.predict(x=i_config.test_products, batch_size=i_nn.BATCH_SIZE)
 
 # append zero values at the right of the aux_enc_test (test dataset has less products than train dataset)
-aux_enc_test_append = np.zeros((200, 232), dtype='float32')
-aux_enc_test = np.append(aux_enc_test, aux_enc_test_append, axis=1)
+aux_enc_test_append = np.zeros((232, target_ae['enc_dim']), dtype='float32')
+aux_enc_test = np.append(aux_enc_test, aux_enc_test_append, axis=0)
 
 # cosine similarity calculation between encoder output with train and test datasets
-aux_enc_test_cs = cosine_similarity(aux_enc.transpose(), aux_enc_test.transpose())
+aux_enc_test_cs = cosine_similarity(aux_enc, aux_enc_test)
 
 # ordering products of the test dataset
 aux_enc_test_cs_sorted_ind = np.sort(aux_enc_test_cs, axis=1)[0, ].argsort()
+aux_enc_test = aux_enc_test.transpose()
 aux_enc_test_reord = aux_enc_test[::, aux_enc_test_cs_sorted_ind]
 
+# add of numpy.zeros to simulate zeros for outcomes
+test_input = np.append(
+    aux_enc_test_reord,
+    np.zeros((12, i_config.total_train_products), dtype='float32'), axis=0
+)
+
+test_input = test_input.reshape(-1, test_input.shape[0], test_input.shape[1])
+
 # %% predict with optimized recurrent NN of stacked dataset with test products
+
+prediction = gru_rnn.predict(test_input, steps=1)
+prediction1 = gru_rnn.predict(prediction, steps=1)
+
+# %%
+pred_data = prediction[0][-12:-1]
+pred_data = i_config.ts_minmax.inverse_transform(pred_data)
+pred_data1 = prediction1[0][-12:-1]
+pred_data1 = i_config.ts_minmax.inverse_transform(pred_data1)
+
+# %%
+pred_df = pd.DataFrame(pred_data)
