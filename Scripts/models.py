@@ -1,6 +1,7 @@
 # Import of essential libraries
 import pickle
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 import data_preprocessing
 from math import ceil
 import tensorflow as tf
@@ -555,6 +556,7 @@ class bayesian_opt:
             parameters:
             **kwargs (object):
         """
+        self.opt_verbose = 2
         self.parameters = parameters
         self.n_init_explore_point = 20
         self.n_bayesian_iterations = 10
@@ -623,7 +625,7 @@ class bayesian_opt:
             self.nn_c.fit_rnn(
                 rnn_model_obj=self.model, data_gen=self.data_gen, full_ts=self.c.train_timeseries,
                 ts_split_index=0, lookback=self.c.ts_lookback,
-                valid_gen=self.data_gen, steps_p_epoch=self.c.ts_steps_per_epoch, epochs=20,
+                valid_gen=self.data_gen, steps_p_epoch=self.c.ts_steps_per_epoch, epochs=10,
                 verbose=0
             )
             scores = self.model.evaluate_generator(
@@ -648,7 +650,7 @@ class bayesian_opt:
         b_opt = BayesianOptimization(
             f=self.bb_partial,
             pbounds=self.parameters,
-            verbose=2,
+            verbose=self.opt_verbose,
             random_state=0
         )
 
@@ -685,7 +687,7 @@ class bayesian_opt:
         print(_new)
         return _new
 
-# %% instantiation of main configuration methods
+# instantiation of main configuration methods
 i_config = config(
     timeseries=data_preprocessing.pts_train_df_zVersion,
     product_train=data_preprocessing.product_train_df_zVersion,
@@ -799,7 +801,7 @@ aux_enc = enc.predict(i_config.train_products, i_nn.BATCH_SIZE)
 
 stack_tsgen_t = i_config.data_sequence_generator(aux_data=aux_enc.transpose())
 
-# %% optimization of hyper-parameters for the recurrent NN
+# optimization of hyper-parameters for the recurrent NN
 # TODO save best model hdf5
 s_rnn_params = {
     'lr': (0.1, 0.001),
@@ -835,17 +837,35 @@ i_optimizer_grurnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=2,
     parameters=gru_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
 
-s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
+s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=10, n_bayesian_iterations=10, log_json=True)
 tf.keras.backend.clear_session()
+print('Bayesian Optimization of Simple RNN, Done!...')
 
-lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
+lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=10, n_bayesian_iterations=10, log_json=True)
 tf.keras.backend.clear_session()
+print('Bayesian Optimization of LSTM RNN, Done!...')
 
-gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=50, n_bayesian_iterations=50, log_json=True)
+gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=10, n_bayesian_iterations=10, log_json=True)
 tf.keras.backend.clear_session()
+print('Bayesian Optimization of GRU RNN, Done!...')
 
 # %% fitting of the test products dataset on optimized auto-encoder
 
+
 # %% construction of stacked dataset with test products
+
+# encoder prediction with test products
+aux_enc_test = enc.predict(x=i_config.test_products, batch_size=i_nn.BATCH_SIZE).transpose()
+
+# append zero values at the right of the aux_enc_test (test dataset has less products than train dataset)
+aux_enc_test_append = np.zeros((200, 232), dtype='float32')
+aux_enc_test = np.append(aux_enc_test, aux_enc_test_append, axis=1)
+
+# cosine similarity calculation between encoder output with train and test datasets
+aux_enc_test_cs = cosine_similarity(aux_enc.transpose(), aux_enc_test.transpose())
+
+# ordering products of the test dataset
+aux_enc_test_cs_sorted_ind = np.sort(aux_enc_test_cs, axis=1)[0, ].argsort()
+aux_enc_test_reord = aux_enc_test[::, aux_enc_test_cs_sorted_ind]
 
 # %% predict with optimized recurrent NN of stacked dataset with test products
