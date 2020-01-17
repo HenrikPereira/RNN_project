@@ -1,0 +1,30 @@
+<component name="ProjectDictionaryState">
+  <dictionary name="henri">
+    <words>
+      <w>autoenc</w>
+      <w>autoencoder</w>
+      <w>crossentropy</w>
+      <w>dataframe</w>
+      <w>grurnn</w>
+      <w>kmeans</w>
+      <w>lookback</w>
+      <w>lstm</w>
+      <w>lstmrnn</w>
+      <w>mafalda</w>
+      <w>nadam</w>
+      <w>noneed</w>
+      <w>outc</w>
+      <w>probab</w>
+      <w>quan</w>
+      <w>relu</w>
+      <w>rmsprop</w>
+      <w>scaler</w>
+      <w>softmax</w>
+      <w>srnn</w>
+      <w>timeseries</w>
+      <w>timesteps</w>
+      <w>tsgen</w>
+      <w>tsne</w>
+    </words>
+  </dictionary>
+</component>
