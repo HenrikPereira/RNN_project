@@ -1,6 +1,8 @@
 # Import of essential libraries
+import json
 import pickle
 import numpy as np
+from bayes_opt.util import load_logs
 from sklearn.metrics.pairwise import cosine_similarity
 import data_preprocessing
 from math import ceil
@@ -614,6 +616,7 @@ class bayesian_opt:
                 y=self.c.x_train,
                 verbose=0
             )
+            tf.keras.backend.clear_session()
         elif self.type_nn == 'rnn':
             self.model = self.nn_c.make_rnn(
                 n_neurons=self.c.ts_lookback, n_prod=self.c.total_train_products, step=self.c.ts_step,
@@ -638,6 +641,7 @@ class bayesian_opt:
                 steps=5,
                 verbose=0
             )
+            tf.keras.backend.clear_session()
 
         # this score has to be inverted in order to find the lowest value by maximizing the inverse
         return 1 / scores[0]
@@ -648,7 +652,7 @@ class bayesian_opt:
 
         return self.blackbox()
 
-    def optimizer(self, log_json=False, **kwargs):
+    def optimizer(self, log_json=False, load_log=False, log_path=None, **kwargs):
         allow = ['n_init_explore_point', 'n_bayesian_iterations']
         self.__dict__.update((k, v) for k, v in kwargs.items() if k in allow)
 
@@ -656,12 +660,15 @@ class bayesian_opt:
             f=self.bb_partial,
             pbounds=self.parameters,
             verbose=self.opt_verbose,
-            random_state=0
+            random_state=0,
         )
 
         if log_json:
             logger = JSONLogger(path=r'./Logs/' + self.type_nn + '_' + str(self.rnn_kind) + '.json')
             b_opt.subscribe(Events.OPTMIZATION_STEP, logger)
+
+        if load_log and log_path is not None:
+            load_logs(b_opt, logs=log_path)
 
         b_opt.maximize(
             init_points=self.n_init_explore_point,
@@ -669,28 +676,38 @@ class bayesian_opt:
             acq="poi",  # Acquisition Function "Probability of Improvement" --> Prefer exploration (with xi=0.1)
             xi=1e-1
         )
-        print('best parameters:', b_opt.max)
+        print('best parameters:', b_opt.max, '\n')
 
         return b_opt
 
-    def param_decode(self, optimizer_max_params):
-        keys = optimizer_max_params.keys()
-        values = optimizer_max_params.values()
-        _new = {}
-        for k, v in zip(keys, values):
-            if k in self.allowed_continuous_keys:
-                _new[k] = v
-            else:
-                _new[k] = int(v)
 
-        # for k in d_keys:
-        #     self.nn_c.act_func_dict = [relu, tanh, selu, linear, LeakyReLU]
-        #     self.nn_c.optimizer_dict = ['adam', 'nadam', 'rmsprop']
-        #     self.nn_c.init_dict = [he_normal(1), he_uniform(1)]
-        #     self.nn_c.rnn_kind_dict = ['SimpleRNN', 'LSTM', 'GRU']
+def param_decode(optimizer_max_params):
+    keys = optimizer_max_params.keys()
+    values = optimizer_max_params.values()
+    _new = {}
+    for k, v in zip(keys, values):
+        if k in {'lr', 'dropout'}:
+            _new[k] = v
+        else:
+            _new[k] = int(v)
 
-        print(_new)
-        return _new
+    # for k in d_keys:
+    #     self.nn_c.act_func_dict = [relu, tanh, selu, linear, LeakyReLU]
+    #     self.nn_c.optimizer_dict = ['adam', 'nadam', 'rmsprop']
+    #     self.nn_c.init_dict = [he_normal(1), he_uniform(1)]
+    #     self.nn_c.rnn_kind_dict = ['SimpleRNN', 'LSTM', 'GRU']
+
+    print(_new)
+    return _new
+
+
+def get_max_ujson(file_path):
+    with open(file_path) as f:
+        j = []
+        for line in f:
+            j.append(json.loads(line))
+    a = pd.DataFrame(j)
+    return a[a['target'] == a['target'].max()]['params'].iloc[0]
 
 
 # %% instantiation of main configuration methods
@@ -698,7 +715,7 @@ i_config = config(
     timeseries=data_preprocessing.pts_train_df_zVersion,
     product_train=data_preprocessing.product_train_df_zVersion,
     product_test=data_preprocessing.product_test_df_zVersion,
-    ts_lookback=6
+    ts_lookback=12
 )
 ts_gen_train = i_config.data_sequence_generator()
 # TODO is validation of TS that really necessary? a product does not have multiple pre_release and releases...
@@ -762,7 +779,6 @@ s_rnn_h_df = pd.DataFrame(s_rnn_h.history)
 tf.keras.backend.clear_session()
 
 # %% optimization of hyper-parameters for the auto-encoder NN
-# TODO save best model hdf5
 ae_params = {
     'lr': (0.1, 0.001),
     'n_hl_ae': (0, 3),
@@ -779,17 +795,9 @@ ae_opt = i_optimizer_ae.optimizer(n_init_explore_point=60, n_bayesian_iterations
 
 tf.keras.backend.clear_session()
 
-# fitting of whole products using best hyper-parameters and generation of corresponding ts data generator
-target_ae = i_optimizer_ae.param_decode(ae_opt.max['params'])
-
-# ae, enc = i_nn.make_ae(
-#     target_ae['lr'], target_ae['n_hl_ae'], target_ae['f_hl_ae'], target_ae['enc_dim'], target_ae['initializer'],
-#     target_ae['act_func'], target_ae['opt'], target_ae['dropout'], target_ae['hidden_batch_norm']
-# )
-
 # %% BEST hyper parameters for Auto Encoder !!!
-target_ae = {"act_func": 2, "dropout": 0.36684517372676817, "enc_dim": 280, "f_hl_ae": 1, "hidden_batch_norm": False,
-             "initializer": 0, "lr": 0.004768298523824321, "n_hl_ae": 0, "opt": 0}
+path_ae = './Logs/ae_master.json'
+target_ae = param_decode(get_max_ujson(path_ae))
 
 ae, enc = i_nn.make_ae(
     target_ae['lr'], target_ae['n_hl_ae'], target_ae['f_hl_ae'], target_ae['enc_dim'], target_ae['initializer'],
@@ -844,21 +852,33 @@ i_optimizer_lstmrnn = bayesian_opt(
 i_optimizer_grurnn = bayesian_opt(
     init_config=i_config, nn_config=i_nn, type_nn='rnn', type_rnn=2,
     parameters=gru_rnn_params, enc_dim=target_ae['enc_dim'], data_gen=stack_tsgen_t)
+
+# %% paths to the logs of the bayesian optimizations ran
+path_srnn = './Logs/rnn_srnn_master.json'
+path_lstm = './Logs/rnn_lstm_master.json'
+path_gru = './Logs/rnn_gru_master.json'
+
 # %%
-s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=5, log_json=True)
 tf.keras.backend.clear_session()
+# s_rnn_opt = i_optimizer_srnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=10, log_json=True)
+s_rnn_opt = i_optimizer_srnn.optimizer(
+    n_init_explore_point=10, n_bayesian_iterations=10, log_json=True, load_log=True, log_path=path_srnn)
 print('Bayesian Optimization of Simple RNN, Done!...')
-# %%
-lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=5, log_json=True)
+#
 tf.keras.backend.clear_session()
+# lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=10, log_json=True)
+lstm_rnn_opt = i_optimizer_lstmrnn.optimizer(
+    n_init_explore_point=10, n_bayesian_iterations=10, log_json=True, load_log=True, log_path=path_lstm)
 print('Bayesian Optimization of LSTM RNN, Done!...')
-# %%
-gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=5, log_json=True)
+#
 tf.keras.backend.clear_session()
+# gru_rnn_opt = i_optimizer_grurnn.optimizer(n_init_explore_point=5, n_bayesian_iterations=10, log_json=True)
+gru_rnn_opt = i_optimizer_grurnn.optimizer(
+    n_init_explore_point=10, n_bayesian_iterations=10, log_json=True, load_log=True, log_path=path_gru)
 print('Bayesian Optimization of GRU RNN, Done!...')
 
 # %% BEST hyper parameters for SRNN !!!
-target_srnn = {"act_func": 1, "act_func_td": 2, "f_hl_r": 1, "lr": 0.04605656488330721, "n_hl_r": 1, "opt": 1}
+target_srnn = param_decode(get_max_ujson(path_srnn))
 
 s_rnn = i_nn.make_rnn(
     act_func=target_srnn['act_func'], act_func_td=target_srnn['act_func_td'],
@@ -876,7 +896,7 @@ s_rnn_h = i_nn.fit_rnn(
 )
 
 # BEST hyper parameters for LSTM !!!
-target_lstmrnn = {"act_func": 1, "act_func_td": 2, "f_hl_r": 1, "lr": 0.04605656488330721, "n_hl_r": 1, "opt": 1}
+target_lstmrnn = param_decode(get_max_ujson(path_lstm))
 
 lstm_rnn = i_nn.make_rnn(
     act_func=target_lstmrnn['act_func'], act_func_td=target_lstmrnn['act_func_td'],
@@ -894,7 +914,7 @@ lstm_rnn_h = i_nn.fit_rnn(
 )
 
 # BEST hyper parameters for GRU !!!
-target_grurnn = {"act_func": 1, "act_func_td": 2, "f_hl_r": 1, "lr": 0.04605656488330721, "n_hl_r": 1, "opt": 1}
+target_grurnn = param_decode(get_max_ujson(path_lstm))
 
 gru_rnn = i_nn.make_rnn(
     act_func=target_grurnn['act_func'], act_func_td=target_grurnn['act_func_td'],
@@ -924,14 +944,15 @@ aux_enc_test = np.append(aux_enc_test, aux_enc_test_append, axis=0)
 aux_enc_test_cs = cosine_similarity(aux_enc, aux_enc_test)
 
 # ordering products of the test dataset
-aux_enc_test_cs_sorted_ind = np.sort(aux_enc_test_cs, axis=1)[0, ].argsort()
+aux_enc_test_cs_sorted_ind = np.sort(aux_enc_test_cs, axis=1)[0,].argsort()
 aux_enc_test = aux_enc_test.transpose()
 aux_enc_test_reord = aux_enc_test[::, aux_enc_test_cs_sorted_ind]
 
 # add of numpy.zeros to simulate zeros for outcomes
 test_input = np.append(
     aux_enc_test_reord,
-    np.zeros((12, i_config.total_train_products), dtype='float32'), axis=0
+    np.zeros((12, i_config.total_train_products), dtype='float32'),
+    axis=0
 )
 
 test_input = test_input.reshape(-1, test_input.shape[0], test_input.shape[1])
@@ -939,13 +960,39 @@ test_input = test_input.reshape(-1, test_input.shape[0], test_input.shape[1])
 # %% predict with optimized recurrent NN of stacked dataset with test products
 
 prediction = gru_rnn.predict(test_input, steps=1)
-prediction1 = gru_rnn.predict(prediction, steps=1)
 
-# %%
-pred_data = prediction[0][-12:-1]
+pred_data = prediction[0][-13:-1]
 pred_data = i_config.ts_minmax.inverse_transform(pred_data)
-pred_data1 = prediction1[0][-12:-1]
-pred_data1 = i_config.ts_minmax.inverse_transform(pred_data1)
 
-# %%
 pred_df = pd.DataFrame(pred_data)
+pred_df = pred_df.applymap(lambda x: np.nan if x <= 0 else x)
+pred_df = pred_df.dropna(axis=1, how='all').transpose()
+
+# %% test of VAE (Bayesian NN)
+# https://medium.com/tensorflow/variational-autoencoders-with-tensorflow-probability-layers-d06c658931b7
+
+tfd = tfp.distributions
+encoded_size = target_ae['enc_dim']
+prior = tfd.Independent(tfd.Normal(loc=tf.zeros(encoded_size), scale=1),
+                        reinterpreted_batch_ndims=1)
+
+tfpl = tfp.layers
+encoder = tf.keras.Sequential([
+    Input(shape=(i_nn.prod_feat, )),
+    Dense(tfpl.MultivariateNormalTriL.params_size(encoded_size), activation=selu, kernel_initializer=he_normal(1)),
+    tfpl.MultivariateNormalTriL(encoded_size, activity_regularizer=tfpl.KLDivergenceRegularizer(prior, weight=1.0)),
+])
+
+decoder = tf.keras.Sequential([
+    Input(shape=(encoded_size, )),
+    Dense(encoded_size, activation=selu, kernel_initializer=he_normal(1)),
+    tfpl.IndependentBernoulli((i_nn.prod_feat, ), tfd.Bernoulli.logits)
+])(encoder)
+
+vae = tf.keras.Model(input_shape=encoder, outputs=decoder)
+
+negative_log_likelihood = lambda x, rv_x: -rv_x.log_prob(x)
+
+vae.compile(optimizer=tf.optimizers.Adam(learning_rate=i_nn.lr), loss=negative_log_likelihood)
+
+vae.fit(i_config.x_train, epochs=20, validation_data=i_config.x_val)

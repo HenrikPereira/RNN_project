@@ -21,6 +21,7 @@
       <w>scaler</w>
       <w>softmax</w>
       <w>srnn</w>
+      <w>tfpl</w>
       <w>timeseries</w>
       <w>timesteps</w>
       <w>tsgen</w>

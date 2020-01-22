@@ -413,12 +413,6 @@ def make_ae_rnn(
     decode = Dense(prod_features, activation='relu', name='AE_3')(decode0)
     shape_re = Reshape((train_prod_feat.shape[0], enc_dim))(encode)
     perm = Permute((2, 1))(shape_re)
-    # ae0 = Input(shape=(train_prod_feat.shape[0], prod_features,))
-    # shape_re0 = Reshape((prod_features,))(ae0)
-    # encode = Dense(enc_dim, activation='relu', kernel_initializer=he_normal(1))(shape_re0)
-    # decode = Dense(prod_features, activation='relu', name='AE_3')(encode)
-    # shape_re = Reshape((train_prod_feat.shape[0], enc_dim))(encode)
-    # perm = Permute((2, 1))(shape_re)
 
     # Simple RNN layers
     # inspired by https://dlpm2016.fbk.eu/docs/esteban_combining.pdf,
