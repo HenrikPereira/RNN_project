@@ -29,7 +29,7 @@ scikit_learn == 0.22.1
 # Scripts\model_exploration.py: 9,10
 # Scripts\models.py: 17,18
 # Scripts\rnn_model_DO_v0.2.py: 11,18
-tensorflow == 2.0.0
+tensorflow == 2.0.1
 
 # Scripts\models.py: 10
 tensorflow_probability == 0.7.0
